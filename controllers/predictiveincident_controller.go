@@ -30,6 +30,10 @@ type PredictiveIncidentReconciler struct {
 	Notifier    IncidentNotifier
 }
 
+type githubissuesCommenter interface {
+	TeamMentions() []string
+}
+
 func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sre.PredictiveIncident{}).
@@ -50,6 +54,9 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if pi.Status.Phase == "" {
 		pi.Status.Phase = sre.PhaseNew
 	}
+	previousPhase := pi.Status.Phase
+	previousActionCount := len(pi.Status.Actions)
+	previousBlockedDetails := pi.Status.BlockedDetails
 
 	evidence, evidenceErr := r.Evidence.Collect(ctx, pi)
 	if len(evidence) > 0 {
@@ -106,7 +113,7 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	r.recordPhaseEvent(pi)
+	r.recordPhaseEvent(pi, previousPhase, previousActionCount, previousBlockedDetails)
 
 	if pi.Status.Phase == sre.PhaseBlocked {
 		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
@@ -155,11 +162,18 @@ func (r *PredictiveIncidentReconciler) applyBasePhase(pi *sre.PredictiveIncident
 	}
 }
 
-func (r *PredictiveIncidentReconciler) recordPhaseEvent(pi *sre.PredictiveIncident) {
+func (r *PredictiveIncidentReconciler) recordPhaseEvent(pi *sre.PredictiveIncident, previousPhase sre.IncidentPhase, previousActionCount int, previousBlockedDetails string) {
 	if r.Recorder == nil {
 		return
 	}
+	if !shouldRecordEvent(previousPhase, pi.Status.Phase, previousActionCount, len(pi.Status.Actions), previousBlockedDetails, pi.Status.BlockedDetails) {
+		return
+	}
 	r.Recorder.Eventf(pi, "Normal", string(pi.Status.Phase), "Incident phase updated to %s", pi.Status.Phase)
+}
+
+func shouldRecordEvent(previousPhase, currentPhase sre.IncidentPhase, previousActionCount, currentActionCount int, previousBlockedDetails, currentBlockedDetails string) bool {
+	return previousPhase != currentPhase || previousActionCount != currentActionCount || previousBlockedDetails != currentBlockedDetails
 }
 
 func appendBlockedDetail(pi *sre.PredictiveIncident, next string) {
@@ -223,7 +237,7 @@ func buildIssueLabels(pi *sre.PredictiveIncident) []string {
 	return labels
 }
 
-func buildEscalationComment(gh *githubissues.Client, pi *sre.PredictiveIncident, decision *rca.Decision) string {
+func buildEscalationComment(gh githubissuesCommenter, pi *sre.PredictiveIncident, decision *rca.Decision) string {
 	mentions := gh.TeamMentions()
 	reason := "operator requested escalation"
 	if pi.Status.BlockedReason != "" {

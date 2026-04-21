@@ -132,3 +132,46 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 		t.Fatalf("expected title update, got %q", got.Spec.Title)
 	}
 }
+
+func TestIncidentNameForFingerprintHandlesShortAndEmptyValues(t *testing.T) {
+	if got := incidentNameForFingerprint("abc"); got != "pi-am-abc" {
+		t.Fatalf("unexpected short fingerprint name: %q", got)
+	}
+	if got := incidentNameForFingerprint("abcdefghijklmnop"); got != "pi-am-abcdefghijkl" {
+		t.Fatalf("unexpected trimmed fingerprint name: %q", got)
+	}
+	if got := incidentNameForFingerprint(""); got == "pi-am-" {
+		t.Fatalf("expected generated name for empty fingerprint, got %q", got)
+	}
+}
+
+func TestHandleAlertsAcceptsShortFingerprint(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := sre.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme returned error: %v", err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	handler := NewHandler(cl)
+
+	payload := webhookPayload{
+		Alerts: []webhookAlert{{
+			Status:      "firing",
+			Fingerprint: "abc",
+			Labels: map[string]string{
+				"alertname": "HighErrorRate",
+				"namespace": "default",
+			},
+		}},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleAlerts(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+}

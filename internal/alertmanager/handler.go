@@ -86,7 +86,7 @@ func (h *Handler) upsertIncident(ctx context.Context, alert webhookAlert) error 
 		fp = fingerprintForAlert(alert)
 	}
 
-	name := "pi-am-" + fp[:12]
+	name := incidentNameForFingerprint(fp)
 	desired := &sre.PredictiveIncident{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -137,6 +137,17 @@ func (h *Handler) upsertIncident(ctx context.Context, alert webhookAlert) error 
 		current.Labels[key] = value
 	}
 	return h.client.Update(ctx, current)
+}
+
+func incidentNameForFingerprint(fp string) string {
+	fp = strings.TrimSpace(fp)
+	if fp == "" {
+		fp = fingerprintForAlert(webhookAlert{})
+	}
+	if len(fp) > 12 {
+		fp = fp[:12]
+	}
+	return "pi-am-" + fp
 }
 
 func fingerprintForAlert(alert webhookAlert) string {

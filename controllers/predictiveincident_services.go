@@ -46,6 +46,21 @@ type IncidentNotifier interface {
 	Sync(ctx context.Context, pi *sre.PredictiveIncident, decision *rca.Decision, shouldEscalate bool) error
 }
 
+type GitHubIssueClient interface {
+	Enabled() bool
+	Repository(defaultProduct string) string
+	TeamMentions() []string
+	TeamSlugs() []string
+	CreateIssue(ctx context.Context, repo, title, body string, labels []string) (*githubissues.Issue, error)
+	CloseIssue(ctx context.Context, repo string, number int) error
+	AddComment(ctx context.Context, repo string, number int, body string) error
+}
+
+type EscalationAlertClient interface {
+	Enabled() bool
+	Send(ctx context.Context, alerts []alertmanager.Alert) error
+}
+
 type DefaultIncidentEvidenceCollector struct {
 	Config config.AppConfig
 }
@@ -118,9 +133,29 @@ func (r *DefaultIncidentPolicyResolver) Resolve(ctx context.Context, pi *sre.Pre
 				continue
 			}
 		}
+		if len(p.Spec.Selector.MatchLabels) > 0 {
+			if !matchesIncidentLabels(pi, p.Spec.Selector.MatchLabels) {
+				continue
+			}
+		}
 		return p, nil
 	}
 	return nil, nil
+}
+
+func matchesIncidentLabels(pi *sre.PredictiveIncident, selector map[string]string) bool {
+	if len(selector) == 0 {
+		return true
+	}
+	if len(pi.Labels) == 0 {
+		return false
+	}
+	for key, want := range selector {
+		if got, ok := pi.Labels[key]; !ok || got != want {
+			return false
+		}
+	}
+	return true
 }
 
 type DefaultIncidentDecisionService struct {
@@ -235,21 +270,22 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 }
 
 type DefaultIncidentNotifier struct {
-	GitHub *githubissues.Client
-	Alert  *alertmanager.Client
+	GitHub GitHubIssueClient
+	Alert  EscalationAlertClient
 }
 
 func (n *DefaultIncidentNotifier) Sync(ctx context.Context, pi *sre.PredictiveIncident, decision *rca.Decision, shouldEscalate bool) error {
+	var errs []error
 	if err := syncGitHubIssue(ctx, pi, n.GitHub, decision, shouldEscalate); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("github: %w", err))
 	}
 	if err := syncEscalationAlert(ctx, pi, n.Alert, decision, shouldEscalate); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("alertmanager: %w", err))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh *githubissues.Client, decision *rca.Decision, shouldEscalate bool) error {
+func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubIssueClient, decision *rca.Decision, shouldEscalate bool) error {
 	if gh == nil || !gh.Enabled() {
 		return nil
 	}
@@ -312,7 +348,7 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh *github
 	return nil
 }
 
-func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am *alertmanager.Client, decision *rca.Decision, shouldEscalate bool) error {
+func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am EscalationAlertClient, decision *rca.Decision, shouldEscalate bool) error {
 	if am == nil || !am.Enabled() || !shouldEscalate || pi.Status.Alerting.EscalationSent {
 		return nil
 	}
