@@ -83,6 +83,13 @@ make build
 
 Binário gerado: `bin/manager`.
 
+Build direto com Go:
+
+```bash
+go mod tidy
+go build -o bin/manager ./cmd/manager
+```
+
 ### Testes e validações
 
 ```bash
@@ -96,6 +103,22 @@ make lint
 
 ```bash
 make run
+```
+
+Ou executando o binário compilado:
+
+```bash
+./bin/manager
+```
+
+Se quiser subir com algumas variáveis locais:
+
+```bash
+export ALERT_WEBHOOK_ADDR=:8090
+export LLM_ROUTING_MODE=ollama_only
+export PROM_URL=http://localhost:9090
+export TEMPO_URL=http://localhost:3100
+./bin/manager
 ```
 
 O binário inicia:
