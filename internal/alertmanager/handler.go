@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,13 +40,21 @@ func NewHandler(c client.Client) *Handler {
 }
 
 func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	result := "accepted"
+	defer func() {
+		appmetrics.RecordAlertWebhookRequest(result, time.Since(startedAt))
+	}()
+
 	if r.Method != http.MethodPost {
+		result = "method_not_allowed"
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var payload webhookPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		result = "bad_request"
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
@@ -58,6 +67,7 @@ func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(failed) > 0 {
+		result = "partial_error"
 		http.Error(w, fmt.Sprintf("failed to persist %d alerts", len(failed)), http.StatusInternalServerError)
 		return
 	}
@@ -123,7 +133,10 @@ func (h *Handler) upsertIncident(ctx context.Context, alert webhookAlert) error 
 	current := &sre.PredictiveIncident{}
 	err := h.client.Get(ctx, client.ObjectKey{Name: name, Namespace: ns}, current)
 	if apierrors.IsNotFound(err) {
-		return h.client.Create(ctx, desired)
+		if err := h.client.Create(ctx, desired); err != nil {
+			return err
+		}
+		return h.syncResolvedStatus(ctx, client.ObjectKey{Name: name, Namespace: ns}, alert, desired.Spec)
 	}
 	if err != nil {
 		return err
@@ -136,7 +149,37 @@ func (h *Handler) upsertIncident(ctx context.Context, alert webhookAlert) error 
 	for key, value := range desired.Labels {
 		current.Labels[key] = value
 	}
-	return h.client.Update(ctx, current)
+	if err := h.client.Update(ctx, current); err != nil {
+		return err
+	}
+	return h.syncResolvedStatus(ctx, client.ObjectKey{Name: name, Namespace: ns}, alert, current.Spec)
+}
+
+func (h *Handler) syncResolvedStatus(ctx context.Context, key client.ObjectKey, alert webhookAlert, spec sre.PredictiveIncidentSpec) error {
+	if !isResolvedAlert(alert.Status) {
+		return nil
+	}
+
+	current := &sre.PredictiveIncident{}
+	if err := h.client.Get(ctx, key, current); err != nil {
+		return err
+	}
+	if current.Status.Phase == sre.PhaseResolved {
+		return nil
+	}
+
+	current.Status.Phase = sre.PhaseResolved
+	current.Status.LastUpdateTime = time.Now().UTC().Format(time.RFC3339)
+	if err := h.client.Status().Update(ctx, current); err != nil {
+		return err
+	}
+
+	appmetrics.RecordResolvedAlert(string(spec.Source), spec.Identity.Namespace, spec.Identity.Service, spec.Severity)
+	return nil
+}
+
+func isResolvedAlert(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "resolved")
 }
 
 func incidentNameForFingerprint(fp string) string {

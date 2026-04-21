@@ -20,9 +20,11 @@ leaderElection:
 
 service:
   type: ClusterIP
+  annotations: {}
   ports:
     webhook: 8090
     probe: 8080
+    metrics: 8081
 
 secret:
   create: true

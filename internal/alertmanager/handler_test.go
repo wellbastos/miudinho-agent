@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,7 +23,7 @@ func TestHandleAlertsCreatesIncidents(t *testing.T) {
 		t.Fatalf("AddToScheme returned error: %v", err)
 	}
 
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects().Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects().Build()
 	handler := NewHandler(cl)
 
 	payload := webhookPayload{
@@ -93,7 +95,7 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 			Title:    "old",
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects(existing).Build()
 	handler := NewHandler(cl)
 
 	payload := webhookPayload{
@@ -150,7 +152,7 @@ func TestHandleAlertsAcceptsShortFingerprint(t *testing.T) {
 	if err := sre.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme returned error: %v", err)
 	}
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).Build()
 	handler := NewHandler(cl)
 
 	payload := webhookPayload{
@@ -173,5 +175,70 @@ func TestHandleAlertsAcceptsShortFingerprint(t *testing.T) {
 	handler.HandleAlerts(rec, req)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+}
+
+func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := sre.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme returned error: %v", err)
+	}
+
+	existing := &sre.PredictiveIncident{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pi-am-abc123abc123",
+			Namespace: "default",
+		},
+		Spec: sre.PredictiveIncidentSpec{
+			Source:   sre.SourceAlertmanager,
+			Severity: "critical",
+			Identity: sre.IncidentIdentity{Namespace: "default", Service: "checkout"},
+		},
+		Status: sre.PredictiveIncidentStatus{
+			Phase: sre.PhaseEnriched,
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects(existing).Build()
+	handler := NewHandler(cl)
+
+	before := testutil.ToFloat64(appmetrics.ResolvedAlertsTotalForTest("alertmanager", "default", "checkout", "critical"))
+
+	payload := webhookPayload{
+		Alerts: []webhookAlert{{
+			Status:      "resolved",
+			Fingerprint: "abc123abc123999999",
+			Labels: map[string]string{
+				"alertname": "HighErrorRate",
+				"namespace": "default",
+				"service":   "checkout",
+				"job":       "checkout",
+				"severity":  "critical",
+			},
+		}},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.HandleAlerts(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+
+	got := &sre.PredictiveIncident{}
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: "pi-am-abc123abc123", Namespace: "default"}, got); err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.Status.Phase != sre.PhaseResolved {
+		t.Fatalf("expected resolved phase, got %s", got.Status.Phase)
+	}
+
+	after := testutil.ToFloat64(appmetrics.ResolvedAlertsTotalForTest("alertmanager", "default", "checkout", "critical"))
+	if after != before+1 {
+		t.Fatalf("expected resolved alert metric increment, got before=%v after=%v", before, after)
 	}
 }

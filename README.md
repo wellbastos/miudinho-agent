@@ -147,6 +147,14 @@ O binário inicia:
 - probes do controller-runtime em `:8080`
 - métricas do controller-runtime em `:8081`
 
+Métricas customizadas expostas no mesmo endpoint `/metrics`:
+
+- `miudinho_agent_reconcile_total`
+- `miudinho_agent_reconcile_duration_seconds`
+- `miudinho_agent_alertmanager_webhook_requests_total`
+- `miudinho_agent_alertmanager_webhook_request_duration_seconds`
+- `miudinho_agent_resolved_alerts_total`
+
 Se o ambiente local tiver restrições de cache do Go, você pode isolar os diretórios de cache dentro do workspace:
 
 ```bash
@@ -177,6 +185,30 @@ make docker-push IMG=seu-registry/miudinho-agent VERSION=0.1.0
 ```
 
 O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9` e runtime distroless.
+
+## CI/CD no GitHub
+
+O workflow [`.github/workflows/ci-ghcr.yml`](.github/workflows/ci-ghcr.yml) executa em `pull_request`, `push` para `main`, tags `v*` e `workflow_dispatch`.
+
+Etapas de validação:
+
+- `lint`: `go mod tidy`, verificação de `go.mod` e `go.sum`, `gofmt`, `go vet`, `golangci-lint` e `helm lint`
+- `test`: `go test ./...` com geração de `cover.out` e `go build ./cmd/manager`
+- `security`: `govulncheck ./...` e `trivy` para scan de vulnerabilidades em dependências
+
+Publicação automática:
+
+- imagem Docker em `ghcr.io/<owner>/<repo>`
+- chart Helm OCI em `oci://ghcr.io/<owner>/helm/miudinho-agent`
+
+Os jobs de publicação só executam depois de `lint`, `test` e `security` passarem com sucesso.
+
+Exemplos de consumo publicados pelo pipeline:
+
+```bash
+docker pull ghcr.io/<owner>/miudinho-agent:latest
+helm pull oci://ghcr.io/<owner>/helm/miudinho-agent --version 0.1.0
+```
 
 ## Deploy com Helm
 
@@ -251,6 +283,46 @@ make uninstall NAMESPACE=o11y
 - `AUTO_OBSERVE_ONLY`
 - `OBSERVE_ONLY_TTL_SECONDS`
 - `LEADER_ELECTION`
+
+## Métricas e Alloy
+
+O operator publica métricas Prometheus em `/metrics` na porta `8081`. O chart Helm agora expõe essa porta também no `Service`, então o Grafana Alloy pode fazer scrape e encaminhar as séries para Prometheus, Mimir ou outro backend compatível.
+
+Exemplo simples de scrape com Alloy:
+
+```hcl
+discovery.kubernetes "miudinho_agent" {
+  role = "service"
+}
+
+discovery.relabel "miudinho_agent" {
+  targets = discovery.kubernetes.miudinho_agent.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_service_name"]
+    regex         = "miudinho-agent"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_kubernetes_service_port_name"]
+    regex         = "metrics"
+    action        = "keep"
+  }
+}
+
+prometheus.scrape "miudinho_agent" {
+  targets    = discovery.relabel.miudinho_agent.output
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+```
+
+As séries mais úteis para operação imediata são:
+
+- `miudinho_agent_reconcile_total{controller="predictiveincident"}`
+- `miudinho_agent_reconcile_duration_seconds`
+- `miudinho_agent_alertmanager_webhook_requests_total`
+- `miudinho_agent_resolved_alerts_total`
 
 ## Modos de LLM
 

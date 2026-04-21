@@ -10,6 +10,7 @@ import (
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
 	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/githubissues"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -41,6 +42,14 @@ func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 }
 
 func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	startedAt := time.Now()
+	source := "unknown"
+	phase := "unknown"
+	result := "success"
+	defer func() {
+		appmetrics.RecordReconcile("predictiveincident", source, phase, result, time.Since(startedAt))
+	}()
+
 	if r.Config.HTTP.AlertWebhookAddr == "" {
 		r.Config = config.LoadFromEnv()
 	}
@@ -48,8 +57,14 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	pi := &sre.PredictiveIncident{}
 	if err := r.Get(ctx, req.NamespacedName, pi); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			result = "not_found"
+			return ctrl.Result{}, nil
+		}
+		result = "error"
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	source = string(pi.Spec.Source)
 
 	if pi.Status.Phase == "" {
 		pi.Status.Phase = sre.PhaseNew
@@ -65,6 +80,8 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	policy, err := r.Policies.Resolve(ctx, pi)
 	if err != nil {
+		phase = string(pi.Status.Phase)
+		result = "error"
 		return ctrl.Result{}, err
 	}
 
@@ -110,8 +127,11 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	pi.Status.ObservedGeneration = pi.Generation
 	pi.Status.LastUpdateTime = time.Now().Format(time.RFC3339)
 	if err := r.Status().Update(ctx, pi); err != nil {
+		phase = string(pi.Status.Phase)
+		result = "error"
 		return ctrl.Result{}, err
 	}
+	phase = string(pi.Status.Phase)
 
 	r.recordPhaseEvent(pi, previousPhase, previousActionCount, previousBlockedDetails)
 

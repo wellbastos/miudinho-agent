@@ -5,6 +5,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "miudinho-agent.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
   selector:
@@ -16,3 +20,6 @@ spec:
     - name: probe
       port: {{ .Values.service.ports.probe }}
       targetPort: probe
+    - name: metrics
+      port: {{ .Values.service.ports.metrics }}
+      targetPort: metrics
