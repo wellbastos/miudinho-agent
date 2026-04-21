@@ -68,10 +68,15 @@ flowchart TD
 
 ## Requisitos
 
-- Go `1.22+`
+- Go `1.25.9+`
 - Docker para build de imagem
 - Helm `3.x`
 - acesso a um cluster Kubernetes para instalação
+
+Versão recomendada:
+
+- usar Go `1.25.9` ou superior
+- evitar builds em `go1.25.0` até `go1.25.8` por correções de segurança da stdlib identificadas por `govulncheck`
 
 ## Desenvolvimento local
 
@@ -171,7 +176,7 @@ make docker-build IMG=seu-registry/miudinho-agent VERSION=0.1.0
 make docker-push IMG=seu-registry/miudinho-agent VERSION=0.1.0
 ```
 
-O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.22` e runtime distroless.
+O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9` e runtime distroless.
 
 ## Deploy com Helm
 
