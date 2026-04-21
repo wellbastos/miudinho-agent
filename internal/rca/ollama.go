@@ -40,7 +40,9 @@ func (o *OllamaClient) Healthcheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("ollama health status=%d", resp.StatusCode)
 	}
@@ -68,7 +70,9 @@ func (o *OllamaClient) Decide(ctx context.Context, systemPrompt string, input ma
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("ollama generate status=%d", resp.StatusCode)

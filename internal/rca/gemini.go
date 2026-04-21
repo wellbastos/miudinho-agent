@@ -69,7 +69,9 @@ func (g *GeminiClient) Healthcheck(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("gemini health status=%d", resp.StatusCode)
@@ -94,7 +96,9 @@ func (g *GeminiClient) Decide(ctx context.Context, systemPrompt string, input ma
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("gemini decide status=%d", resp.StatusCode)
@@ -127,7 +131,9 @@ func (g *GeminiClient) Approve(ctx context.Context, approverPrompt string, input
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("gemini approve status=%d", resp.StatusCode)

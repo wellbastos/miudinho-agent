@@ -50,29 +50,29 @@ func TestCreateIssueSendsExpectedPayloadAndHeaders(t *testing.T) {
 	client := &Client{
 		baseURL: "https://github.example",
 		httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		method = r.Method
-		path = r.URL.Path
-		auth = r.Header.Get("Authorization")
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
+			method = r.Method
+			path = r.URL.Path
+			auth = r.Header.Get("Authorization")
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
 
-		respBody, err := json.Marshal(Issue{
-			Number:  42,
-			HTMLURL: "https://github.example/issues/42",
-			State:   "open",
-		})
-		if err != nil {
-			t.Fatalf("marshal response body: %v", err)
-		}
-		return &http.Response{
-			StatusCode: http.StatusCreated,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(string(respBody))),
-		}, nil
-	})},
-		token:      "token-123",
-		owner:      "wellbastos",
+			respBody, err := json.Marshal(Issue{
+				Number:  42,
+				HTMLURL: "https://github.example/issues/42",
+				State:   "open",
+			})
+			if err != nil {
+				t.Fatalf("marshal response body: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusCreated,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(string(respBody))),
+			}, nil
+		})},
+		token: "token-123",
+		owner: "wellbastos",
 	}
 
 	issue, err := client.CreateIssue(context.Background(), "apps-miudinho", "incident title", "incident body", []string{"incident", "sre"})

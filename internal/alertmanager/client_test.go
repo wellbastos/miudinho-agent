@@ -22,21 +22,21 @@ func TestSendPostsAlerts(t *testing.T) {
 	client := &Client{
 		baseURL: "https://alertmanager.example/api/v2/alerts",
 		httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodPost {
-			t.Fatalf("unexpected method: %s", r.Method)
-		}
-		if ct := r.Header.Get("Content-Type"); ct != "application/json" {
-			t.Fatalf("unexpected content-type: %q", ct)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Fatalf("decode request body: %v", err)
-		}
-		return &http.Response{
-			StatusCode: http.StatusAccepted,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("")),
-		}, nil
-	})},
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected method: %s", r.Method)
+			}
+			if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("unexpected content-type: %q", ct)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusAccepted,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})},
 	}
 
 	alerts := []Alert{{

@@ -476,11 +476,3 @@ func systemPrompt() string {
 func approverPrompt() string {
 	return getenv("APPROVER_PROMPT", `Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70.`)
 }
-
-func getenv(k, def string) string {
-	v := os.Getenv(k)
-	if v == "" {
-		return def
-	}
-	return v
-}

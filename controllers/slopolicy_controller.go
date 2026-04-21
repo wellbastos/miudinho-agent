@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"time"
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
@@ -94,7 +93,7 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				Severity:    "warning",
 				Title:       "Predictive risk detected",
 				Description: "Service shows predictive error trend",
-				Identity: sre.IncidentIdentity{Namespace: ns, Service: svc, Job: job},
+				Identity:    sre.IncidentIdentity{Namespace: ns, Service: svc, Job: job},
 				Signals: map[string]any{
 					"error_rate_pct": er,
 					"five_xx_rps":    rps,
@@ -133,19 +132,13 @@ func promScalar(resp map[string]any) float64 {
 	}
 	s, _ := val[1].(string)
 	var f float64
-	fmt.Sscanf(s, "%f", &f)
+	if _, err := fmt.Sscanf(s, "%f", &f); err != nil {
+		return 0
+	}
 	return f
 }
 
 func fingerprint(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
-}
-
-func getenv(k, def string) string {
-	v := os.Getenv(k)
-	if v == "" {
-		return def
-	}
-	return v
 }
