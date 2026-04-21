@@ -3,18 +3,16 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
+	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/githubissues"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
-	"github.com/wellbastos/miudinho-agent/internal/telemetry"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -22,6 +20,14 @@ import (
 type PredictiveIncidentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	Config      config.AppConfig
+	Recorder    record.EventRecorder
+	Evidence    IncidentEvidenceCollector
+	Policies    IncidentPolicyResolver
+	DecisionSvc IncidentDecisionService
+	Actions     IncidentActionExecutor
+	Notifier    IncidentNotifier
 }
 
 func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -31,6 +37,11 @@ func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 }
 
 func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	if r.Config.HTTP.AlertWebhookAddr == "" {
+		r.Config = config.LoadFromEnv()
+	}
+	r.ensureDefaults()
+
 	pi := &sre.PredictiveIncident{}
 	if err := r.Get(ctx, req.NamespacedName, pi); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -40,319 +51,123 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		pi.Status.Phase = sre.PhaseNew
 	}
 
-	prom := telemetry.NewPromClient(getenv("PROM_URL", "http://thanos-query.o11y.svc.cluster.local:10901"))
-	tempo := telemetry.NewTempoClient(getenv("TEMPO_URL", "http://tempo.o11y.svc.cluster.local:3100"), getenv("TEMPO_PREDICTIVE_PATH", "api/search"), getenv("TEMPO_PREDICTIVE_QUERY_PARAM", "q"))
+	evidence, evidenceErr := r.Evidence.Collect(ctx, pi)
+	if len(evidence) > 0 {
+		pi.Status.Evidence = evidence
+	}
 
-	promEvidence := map[string]any{}
-	if pi.Spec.Identity.Service != "" && pi.Spec.Identity.Job != "" {
-		ns, svc, job := pi.Spec.Identity.Namespace, pi.Spec.Identity.Service, pi.Spec.Identity.Job
-		q5xx := fmt.Sprintf(`sum(rate(http_requests_total{namespace="%s",service="%s",job="%s",status=~"5.."}[5m]))`, ns, svc, job)
-		qtot := fmt.Sprintf(`sum(rate(http_requests_total{namespace="%s",service="%s",job="%s"}[5m]))`, ns, svc, job)
-		qer := fmt.Sprintf(`100*(%s)/clamp_min((%s),1)`, q5xx, qtot)
-		if r1, err := prom.Query(qer); err == nil {
-			promEvidence["error_rate_pct"] = r1
-		}
-		if r2, err := prom.Query(q5xx); err == nil {
-			promEvidence["five_xx_rps"] = r2
+	policy, err := r.Policies.Resolve(ctx, pi)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	eval, evalErr := r.DecisionSvc.Evaluate(ctx, pi, policy)
+	if evalErr != nil {
+		appendBlockedDetail(pi, "decision_error: "+evalErr.Error())
+	}
+	if evidenceErr != nil {
+		appendBlockedDetail(pi, "evidence_error: "+evidenceErr.Error())
+	}
+
+	if eval.Decision != nil {
+		pi.Status.RCA = sre.RCAStatus{
+			Classification: eval.Decision.Classification,
+			Confidence:     eval.Decision.Confidence,
+			Summary:        eval.Decision.Summary,
+			Details: map[string]any{
+				"approval":          eval.Approval,
+				"observeOnly":       eval.ObserveOnly,
+				"observeOnlyReason": eval.ObserveReason,
+				"engine":            eval.EngineSnapshot,
+			},
 		}
 	}
 
-	tempoEvidence := map[string]any{}
-	if pi.Spec.Identity.Service != "" && pi.Spec.Identity.Namespace != "" {
-		q := fmt.Sprintf(`service.name="%s" AND k8s.namespace.name="%s" AND (status=error OR timeout OR "deadline exceeded")`, pi.Spec.Identity.Service, pi.Spec.Identity.Namespace)
-		if rt, err := tempo.Search(q); err == nil {
-			tempoEvidence["search"] = rt
-		} else {
-			tempoEvidence["error"] = err.Error()
-		}
-	}
+	r.applyBasePhase(pi, policy, eval)
 
-	pi.Status.Evidence = upsertEvidence(pi.Status.Evidence, sre.EvidenceItem{Kind: "prometheus", Summary: "Thanos queries for service health", Ref: "PROM_URL", Data: promEvidence})
-	pi.Status.Evidence = upsertEvidence(pi.Status.Evidence, sre.EvidenceItem{Kind: "tempo", Summary: "Tempo search hint", Ref: "TEMPO_URL", Data: tempoEvidence})
-
-	policy, _ := r.selectPolicy(ctx, pi)
-
-	engine := rca.NewEngine(systemPrompt(), approverPrompt())
-	hctx, cancel := rca.WithTimeout()
-	defer cancel()
-	engine.Healthcheck(hctx)
-
-	decision, _ := engine.Analyze(hctx, map[string]any{
-		"source": string(pi.Spec.Source),
-		"identity": map[string]any{
-			"namespace":  pi.Spec.Identity.Namespace,
-			"service":    pi.Spec.Identity.Service,
-			"job":        pi.Spec.Identity.Job,
-			"pod":        pi.Spec.Identity.Pod,
-			"deployment": pi.Spec.Identity.Deployment,
-		},
-		"signals":  pi.Spec.Signals,
-		"evidence": pi.Status.Evidence,
-	})
-
-	approval, _ := engine.Approve(hctx, decision, map[string]any{
-		"policy": policy,
-		"incident": map[string]any{
-			"name":      pi.Name,
-			"namespace": pi.Namespace,
-		},
-	})
-
-	observeOnly, observeReason := engine.ObserveOnly()
-	if observeOnly {
+	acted, actionErr := r.Actions.Execute(ctx, pi, policy, eval)
+	if actionErr != nil {
+		appendBlockedDetail(pi, "action_error: "+actionErr.Error())
 		pi.Status.Phase = sre.PhaseBlocked
-		pi.Status.BlockedReason = "observe_only"
-		pi.Status.BlockedDetails = observeReason
+		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "action_error")
 	}
-
-	pi.Status.RCA = sre.RCAStatus{
-		Classification: decision.Classification,
-		Confidence:     decision.Confidence,
-		Summary:        decision.Summary,
-		Details: map[string]any{
-			"approval":          approval,
-			"observeOnly":       observeOnly,
-			"observeOnlyReason": observeReason,
-			"engine":            engine.Snapshot(),
-		},
-	}
-
-	issueClient := githubissues.NewFromEnv()
-	alertClient := alertmanager.NewClientFromEnv()
-	if err := r.syncGitHubIssue(ctx, pi, issueClient, decision, shouldEscalateIssue(pi, decision, observeOnly || !approval.Approved)); err != nil {
-		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "github_issue_sync_error: "+err.Error())
-	}
-	if err := r.syncEscalationAlert(ctx, pi, alertClient, decision, shouldEscalateIssue(pi, decision, observeOnly || !approval.Approved)); err != nil {
-		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "alertmanager_sync_error: "+err.Error())
-	}
-
-	if observeOnly || !approval.Approved || policy == nil || os.Getenv("EXECUTE_ACTIONS") != "true" {
-		pi.Status.Phase = sre.PhaseEnriched
-		pi.Status.ObservedGeneration = pi.Generation
-		pi.Status.LastUpdateTime = time.Now().Format(time.RFC3339)
-		_ = r.Status().Update(ctx, pi)
-		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
-	}
-
-	acted := false
-	for _, rule := range policy.Spec.Rules {
-		if rule.When.Source != "" && rule.When.Source != string(pi.Spec.Source) {
-			continue
-		}
-		if rule.When.Classification != "" && rule.When.Classification != decision.Classification {
-			continue
-		}
-		for _, act := range rule.Actions {
-			switch act.Type {
-			case "observeOnly":
-			case "escalate":
-				pi.Status.Phase = sre.PhaseEscalated
-				acted = true
-			case "restartPod":
-				if pi.Spec.Identity.Pod == "" {
-					continue
-				}
-				pod := &corev1.Pod{}
-				pod.Name = pi.Spec.Identity.Pod
-				pod.Namespace = pi.Spec.Identity.Namespace
-				if err := r.Delete(ctx, pod); err == nil {
-					pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{Name: "restart-pod", Tool: "k8s_delete_pod", Args: map[string]any{"namespace": pi.Spec.Identity.Namespace, "pod": pi.Spec.Identity.Pod}, Result: map[string]any{"ok": true}, ExecutedAt: time.Now().Format(time.RFC3339)})
-					pi.Status.Phase = sre.PhaseMitigated
-					acted = true
-				}
-			case "rolloutRestartDeployment":
-				if pi.Spec.Identity.Deployment == "" {
-					continue
-				}
-				dep := &appsv1.Deployment{}
-				if err := r.Get(ctx, client.ObjectKey{Namespace: pi.Spec.Identity.Namespace, Name: pi.Spec.Identity.Deployment}, dep); err == nil {
-					if dep.Spec.Template.Annotations == nil {
-						dep.Spec.Template.Annotations = map[string]string{}
-					}
-					dep.Spec.Template.Annotations["miudinho-agent/restartedAt"] = fmt.Sprintf("%d", time.Now().Unix())
-					if err := r.Update(ctx, dep); err == nil {
-						pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{Name: "rollout-restart", Tool: "k8s_patch_deployment", Args: map[string]any{"namespace": pi.Spec.Identity.Namespace, "deployment": pi.Spec.Identity.Deployment}, Result: map[string]any{"ok": true}, ExecutedAt: time.Now().Format(time.RFC3339)})
-						pi.Status.Phase = sre.PhaseMitigated
-						acted = true
-					}
-				}
-			}
-		}
-		if acted {
-			break
-		}
-	}
-
 	if !acted && pi.Status.Phase == sre.PhaseNew {
 		pi.Status.Phase = sre.PhaseEnriched
 	}
 
+	shouldEscalate := shouldEscalateIssue(pi, eval.Decision, pi.Status.Phase == sre.PhaseEscalated)
+	if err := r.Notifier.Sync(ctx, pi, eval.Decision, shouldEscalate); err != nil {
+		appendBlockedDetail(pi, "notification_error: "+err.Error())
+	}
+
 	pi.Status.ObservedGeneration = pi.Generation
 	pi.Status.LastUpdateTime = time.Now().Format(time.RFC3339)
-	if err := r.syncGitHubIssue(ctx, pi, issueClient, decision, shouldEscalateIssue(pi, decision, pi.Status.Phase == sre.PhaseEscalated)); err != nil {
-		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "github_issue_sync_error: "+err.Error())
+	if err := r.Status().Update(ctx, pi); err != nil {
+		return ctrl.Result{}, err
 	}
-	if err := r.syncEscalationAlert(ctx, pi, alertClient, decision, shouldEscalateIssue(pi, decision, pi.Status.Phase == sre.PhaseEscalated)); err != nil {
-		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "alertmanager_sync_error: "+err.Error())
-	}
-	_ = r.Status().Update(ctx, pi)
 
+	r.recordPhaseEvent(pi)
+
+	if pi.Status.Phase == sre.PhaseBlocked {
+		return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+	}
 	return ctrl.Result{RequeueAfter: 3 * time.Minute}, nil
 }
 
-func (r *PredictiveIncidentReconciler) selectPolicy(ctx context.Context, pi *sre.PredictiveIncident) (*sre.AutoRemediationPolicy, error) {
-	var pols sre.AutoRemediationPolicyList
-	if err := r.List(ctx, &pols, client.InNamespace(pi.Spec.Identity.Namespace)); err != nil {
-		return nil, err
+func (r *PredictiveIncidentReconciler) ensureDefaults() {
+	if r.Evidence == nil {
+		r.Evidence = &DefaultIncidentEvidenceCollector{Config: r.Config}
 	}
-	for i := range pols.Items {
-		p := &pols.Items[i]
-		if p.Spec.Selector.Namespace != "" && p.Spec.Selector.Namespace != pi.Spec.Identity.Namespace {
-			continue
-		}
-		if len(p.Spec.Selector.Severities) > 0 && pi.Spec.Severity != "" {
-			ok := false
-			for _, s := range p.Spec.Selector.Severities {
-				if s == pi.Spec.Severity {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				continue
-			}
-		}
-		return p, nil
+	if r.Policies == nil {
+		r.Policies = &DefaultIncidentPolicyResolver{Client: r.Client}
 	}
-	return nil, nil
+	if r.DecisionSvc == nil {
+		r.DecisionSvc = &DefaultIncidentDecisionService{Config: r.Config}
+	}
+	if r.Actions == nil {
+		r.Actions = &DefaultIncidentActionExecutor{Client: r.Client, Config: r.Config}
+	}
+	if r.Notifier == nil {
+		r.Notifier = &DefaultIncidentNotifier{
+			GitHub: githubissues.New(r.Config.GitHub),
+			Alert:  nil,
+		}
+	}
+	if notifier, ok := r.Notifier.(*DefaultIncidentNotifier); ok && notifier.Alert == nil {
+		notifier.Alert = alertmanager.NewClient(r.Config.Observability)
+	}
 }
 
-func upsertEvidence(list []sre.EvidenceItem, ev sre.EvidenceItem) []sre.EvidenceItem {
-	out := make([]sre.EvidenceItem, 0, len(list)+1)
-	replaced := false
-	for _, x := range list {
-		if x.Kind == ev.Kind {
-			out = append(out, ev)
-			replaced = true
-		} else {
-			out = append(out, x)
-		}
+func (r *PredictiveIncidentReconciler) applyBasePhase(pi *sre.PredictiveIncident, policy *sre.AutoRemediationPolicy, eval IncidentEvaluation) {
+	switch {
+	case eval.ObserveOnly:
+		pi.Status.Phase = sre.PhaseBlocked
+		pi.Status.BlockedReason = "observe_only"
+		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, eval.ObserveReason)
+	case eval.Approval != nil && !eval.Approval.Approved:
+		pi.Status.Phase = sre.PhaseBlocked
+		pi.Status.BlockedReason = "approval_denied"
+		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, strings.Join(eval.Approval.Reasons, "; "))
+	case policy == nil || !r.Config.Execution.ExecuteActions:
+		pi.Status.Phase = sre.PhaseEnriched
+	default:
+		pi.Status.Phase = sre.PhaseEnriched
 	}
-	if !replaced {
-		out = append(out, ev)
-	}
-	return out
 }
 
-func (r *PredictiveIncidentReconciler) syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh *githubissues.Client, decision *rca.Decision, shouldEscalate bool) error {
-	if gh == nil || !gh.Enabled() {
-		return nil
+func (r *PredictiveIncidentReconciler) recordPhaseEvent(pi *sre.PredictiveIncident) {
+	if r.Recorder == nil {
+		return
 	}
+	r.Recorder.Eventf(pi, "Normal", string(pi.Status.Phase), "Incident phase updated to %s", pi.Status.Phase)
+}
 
-	repo := gh.Repository(pi.Spec.Identity.Service)
-	if pi.Status.GitHub.Repository != "" {
-		repo = pi.Status.GitHub.Repository
-	}
-	if pi.Status.GitHub.Number == 0 {
-		issue, err := gh.CreateIssue(ctx, repo, buildIssueTitle(pi), buildIssueBody(pi, decision), buildIssueLabels(pi))
-		if err != nil {
-			return err
-		}
-		pi.Status.GitHub.Repository = repo
-		pi.Status.GitHub.Number = issue.Number
-		pi.Status.GitHub.URL = issue.HTMLURL
-		pi.Status.GitHub.State = issue.State
-		pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
-		pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
-			Name:       "open-github-issue",
-			Tool:       "github_create_issue",
-			Args:       map[string]any{"repository": repo},
-			Result:     map[string]any{"number": issue.Number, "url": issue.HTMLURL},
-			ExecutedAt: time.Now().Format(time.RFC3339),
-		})
-	}
-
-	if shouldEscalate && !pi.Status.GitHub.Escalated && pi.Status.GitHub.Number > 0 {
-		if err := gh.AddComment(ctx, repo, pi.Status.GitHub.Number, buildEscalationComment(gh, pi, decision)); err != nil {
-			return err
-		}
-		pi.Status.GitHub.Escalated = true
-		pi.Status.GitHub.EscalatedTeams = gh.TeamSlugs()
-		pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
-		pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
-			Name:       "escalate-github-issue",
-			Tool:       "github_issue_comment",
-			Args:       map[string]any{"repository": repo, "issueNumber": pi.Status.GitHub.Number},
-			Result:     map[string]any{"teams": gh.TeamSlugs()},
-			ExecutedAt: time.Now().Format(time.RFC3339),
-		})
-	}
-
-	if shouldCloseIssue(pi) && pi.Status.GitHub.Number > 0 && pi.Status.GitHub.State != "closed" {
-		if err := gh.CloseIssue(ctx, repo, pi.Status.GitHub.Number); err != nil {
-			return err
-		}
-		pi.Status.GitHub.State = "closed"
-		pi.Status.GitHub.ClosedAt = time.Now().Format(time.RFC3339)
-		pi.Status.GitHub.LastSyncTime = pi.Status.GitHub.ClosedAt
-		pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
-			Name:       "close-github-issue",
-			Tool:       "github_close_issue",
-			Args:       map[string]any{"repository": repo, "issueNumber": pi.Status.GitHub.Number},
-			Result:     map[string]any{"state": "closed"},
-			ExecutedAt: time.Now().Format(time.RFC3339),
-		})
-	}
-
-	return nil
+func appendBlockedDetail(pi *sre.PredictiveIncident, next string) {
+	pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, next)
 }
 
 func shouldCloseIssue(pi *sre.PredictiveIncident) bool {
 	return pi.Status.Phase == sre.PhaseMitigated || pi.Status.Phase == sre.PhaseResolved
-}
-
-func (r *PredictiveIncidentReconciler) syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am *alertmanager.Client, decision *rca.Decision, shouldEscalate bool) error {
-	if am == nil || !am.Enabled() || !shouldEscalate || pi.Status.Alerting.EscalationSent {
-		return nil
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	alert := alertmanager.Alert{
-		Labels: map[string]string{
-			"alertname":           "MiudinhoAgentEscalatedIncident",
-			"severity":            defaultIfEmpty(strings.ToLower(pi.Spec.Severity), "warning"),
-			"namespace":           pi.Spec.Identity.Namespace,
-			"service":             defaultIfEmpty(pi.Spec.Identity.Service, "unknown"),
-			"source":              string(pi.Spec.Source),
-			"incident_name":       pi.Name,
-			"incident_phase":      string(pi.Status.Phase),
-			"escalation_target":   "n2",
-			"managed_by":          "miudinho-agent",
-			"github_issue_number": fmt.Sprintf("%d", pi.Status.GitHub.Number),
-		},
-		Annotations: map[string]string{
-			"summary":          defaultIfEmpty(pi.Status.RCA.Summary, pi.Spec.Title),
-			"description":      buildEscalationSummary(pi, decision),
-			"github_issue_url": pi.Status.GitHub.URL,
-		},
-		StartsAt:     now,
-		GeneratorURL: pi.Status.GitHub.URL,
-	}
-
-	if err := am.Send(ctx, []alertmanager.Alert{alert}); err != nil {
-		return err
-	}
-
-	pi.Status.Alerting.EscalationSent = true
-	pi.Status.Alerting.LastSentTime = now
-	pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
-		Name:       "send-alertmanager-escalation",
-		Tool:       "alertmanager_send_alert",
-		Args:       map[string]any{"incident": pi.Name, "target": "n2"},
-		Result:     map[string]any{"sent": true},
-		ExecutedAt: now,
-	})
-	return nil
 }
 
 func shouldEscalateIssue(pi *sre.PredictiveIncident, decision *rca.Decision, fallback bool) bool {
@@ -456,6 +271,9 @@ func buildEscalationSummary(pi *sre.PredictiveIncident, decision *rca.Decision) 
 }
 
 func appendStatusDetail(current, next string) string {
+	if next == "" {
+		return current
+	}
 	if current == "" {
 		return next
 	}
@@ -467,12 +285,4 @@ func defaultIfEmpty(v, def string) string {
 		return def
 	}
 	return v
-}
-
-func systemPrompt() string {
-	return getenv("SYSTEM_PROMPT", `Você é um Agente SRE de produção. Responda sempre em JSON válido com classification, confidence, summary, evidence, prom_queries, actions, rollback_or_next_steps, escalation. Para predictive, priorize low-risk. Confidence < 0.70 => sem mudanças.`)
-}
-
-func approverPrompt() string {
-	return getenv("APPROVER_PROMPT", `Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70.`)
 }

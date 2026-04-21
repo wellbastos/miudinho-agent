@@ -3,8 +3,9 @@ package rca
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 type Decision struct {
@@ -42,15 +43,15 @@ type Engine struct {
 	ApproverPrompt string
 }
 
-func NewEngine(systemPrompt, approverPrompt string) *Engine {
+func NewEngine(cfg config.AppConfig) *Engine {
 	return &Engine{
-		Execute:        os.Getenv("EXECUTE_ACTIONS") == "true",
-		RoutingMode:    getenv("LLM_ROUTING_MODE", "ollama_only"),
-		Ollama:         NewOllamaClient(),
-		Gemini:         NewGeminiClient(),
-		CB:             NewCircuitBreaker(),
-		SystemPrompt:   systemPrompt,
-		ApproverPrompt: approverPrompt,
+		Execute:        cfg.Execution.ExecuteActions,
+		RoutingMode:    cfg.LLM.RoutingMode,
+		Ollama:         NewOllamaClient(cfg.LLM),
+		Gemini:         NewGeminiClient(cfg.LLM),
+		CB:             NewCircuitBreakerWithConfig(cfg.Execution),
+		SystemPrompt:   cfg.LLM.SystemPrompt,
+		ApproverPrompt: cfg.LLM.ApproverPrompt,
 	}
 }
 

@@ -111,6 +111,7 @@ Hoje a suíte cobre principalmente componentes isolados e sem dependência de cl
 - `internal/githubissues`
 - `internal/alertmanager`
 - `internal/telemetry`
+- `controllers` para transições críticas do reconciler de incidentes
 
 ### Executar localmente
 
@@ -131,6 +132,7 @@ export ALERT_WEBHOOK_ADDR=:8090
 export LLM_ROUTING_MODE=ollama_only
 export PROM_URL=http://localhost:9090
 export TEMPO_URL=http://localhost:3100
+export LEADER_ELECTION=false
 ./bin/manager
 ```
 
@@ -243,6 +245,7 @@ make uninstall NAMESPACE=o11y
 - `EXECUTE_ACTIONS`
 - `AUTO_OBSERVE_ONLY`
 - `OBSERVE_ONLY_TTL_SECONDS`
+- `LEADER_ELECTION`
 
 ## Modos de LLM
 
@@ -272,6 +275,7 @@ Campos mais usados:
 - `serviceAccount.create`
 - `serviceAccount.name`
 - `rbac.create`
+- `leaderElection.enabled`
 - `env.alertWebhookAddr`
 - `env.alertmanagerOutboundUrl`
 - `env.promUrl`

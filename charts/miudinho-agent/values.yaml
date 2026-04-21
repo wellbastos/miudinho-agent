@@ -15,6 +15,9 @@ serviceAccount:
 rbac:
   create: true
 
+leaderElection:
+  enabled: false
+
 service:
   type: ClusterIP
   ports:

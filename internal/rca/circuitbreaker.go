@@ -1,9 +1,10 @@
 package rca
 
 import (
-	"os"
 	"sync"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 type CircuitBreaker struct {
@@ -17,17 +18,15 @@ type CircuitBreaker struct {
 }
 
 func NewCircuitBreaker() *CircuitBreaker {
-	ttl := 300 * time.Second
-	if v := os.Getenv("OBSERVE_ONLY_TTL_SECONDS"); v != "" {
-		if d, err := time.ParseDuration(v + "s"); err == nil {
-			ttl = d
-		}
-	}
+	return NewCircuitBreakerWithConfig(config.LoadFromEnv().Execution)
+}
+
+func NewCircuitBreakerWithConfig(cfg config.ExecutionConfig) *CircuitBreaker {
 	return &CircuitBreaker{
 		lastOllamaOK: true,
 		lastGeminiOK: true,
-		ttl:          ttl,
-		enabled:      os.Getenv("AUTO_OBSERVE_ONLY") != "false",
+		ttl:          cfg.ObserveOnlyTTL,
+		enabled:      cfg.AutoObserveOnly,
 	}
 }
 

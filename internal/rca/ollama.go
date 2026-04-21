@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 type OllamaClient struct {
@@ -15,10 +17,10 @@ type OllamaClient struct {
 	HTTP    *http.Client
 }
 
-func NewOllamaClient() *OllamaClient {
+func NewOllamaClient(cfg config.LLMConfig) *OllamaClient {
 	return &OllamaClient{
-		BaseURL: getenv("OLLAMA_BASE_URL", "http://ollama.o11y.svc.cluster.local:11434"),
-		Model:   getenv("OLLAMA_MODEL", "llama3.1:8b"),
+		BaseURL: cfg.OllamaBaseURL,
+		Model:   cfg.OllamaModel,
 		HTTP:    &http.Client{Timeout: 20 * time.Second},
 	}
 }

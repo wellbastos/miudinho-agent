@@ -8,16 +8,20 @@ import (
 	"time"
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
+	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/telemetry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type SLOPolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Config   config.AppConfig
+	Recorder record.EventRecorder
 }
 
 func (r *SLOPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -37,7 +41,7 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		interval = 120 * time.Second
 	}
 
-	prom := telemetry.NewPromClient(getenv("PROM_URL", "http://thanos-query.o11y.svc.cluster.local:10901"))
+	prom := telemetry.NewPromClient(r.Config.Observability.PromURL)
 
 	ns := slo.Spec.Service.Namespace
 	if ns == "" {
@@ -64,9 +68,18 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	qer := fmt.Sprintf(`100*(%s)/clamp_min((%s),1)`, q5xx, qtot)
 	qslope := fmt.Sprintf(`deriv((%s)[30m:1m])`, q5xx)
 
-	erResp, _ := prom.Query(qer)
-	rpsResp, _ := prom.Query(q5xx)
-	slopeResp, _ := prom.Query(qslope)
+	erResp, err := prom.Query(qer)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	rpsResp, err := prom.Query(q5xx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	slopeResp, err := prom.Query(qslope)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	er := promScalar(erResp)
 	rps := promScalar(rpsResp)
@@ -104,17 +117,29 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		current := &sre.PredictiveIncident{}
 		err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, current)
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err
+		}
 		if err != nil {
-			_ = r.Create(ctx, pi)
+			if err := r.Create(ctx, pi); err != nil {
+				return ctrl.Result{}, err
+			}
 		} else {
 			current.Spec = pi.Spec
-			_ = r.Update(ctx, current)
+			if err := r.Update(ctx, current); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		if r.Recorder != nil {
+			r.Recorder.Eventf(slo, "Normal", "PredictiveIncidentCreated", "Predictive incident %s evaluated as risky", name)
 		}
 	}
 
 	slo.Status.LastRunTime = time.Now().Format(time.RFC3339)
 	slo.Status.ObservedGeneration = slo.Generation
-	_ = r.Status().Update(ctx, slo)
+	if err := r.Status().Update(ctx, slo); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{RequeueAfter: interval}, nil
 }

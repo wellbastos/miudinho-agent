@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 type Client struct {
@@ -25,13 +26,17 @@ type Alert struct {
 	GeneratorURL string            `json:"generatorURL,omitempty"`
 }
 
-func NewClientFromEnv() *Client {
+func NewClient(cfg config.ObservabilityConfig) *Client {
 	return &Client{
-		baseURL: strings.TrimSpace(os.Getenv("ALERTMANAGER_OUTBOUND_URL")),
+		baseURL: strings.TrimSpace(cfg.AlertmanagerOutboundURL),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+func NewClientFromEnv() *Client {
+	return NewClient(config.LoadFromEnv().Observability)
 }
 
 func (c *Client) Enabled() bool {

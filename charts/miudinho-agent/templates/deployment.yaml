@@ -23,6 +23,7 @@ spec:
           args:
             - "--health-probe-bind-address=:8080"
             - "--metrics-bind-address=:8081"
+            - "--leader-elect={{ .Values.leaderElection.enabled }}"
           ports:
             - name: probe
               containerPort: 8080

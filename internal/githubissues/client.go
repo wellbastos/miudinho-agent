@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 var slugSanitizer = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -30,17 +32,21 @@ type Issue struct {
 	State   string `json:"state"`
 }
 
-func NewFromEnv() *Client {
+func New(cfg config.GitHubConfig) *Client {
 	return &Client{
-		baseURL: getenv("GITHUB_API_URL", "https://api.github.com"),
+		baseURL: cfg.APIURL,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		token:   os.Getenv("GITHUB_TOKEN"),
-		owner:   os.Getenv("GITHUB_OWNER"),
-		product: os.Getenv("GITHUB_PRODUCT_NAME"),
-		teams:   splitCSV(getenv("GITHUB_N2_TEAMS", "sq-sre-admin,sq-sre-editor,sq-ser-viewer")),
+		token:   cfg.Token,
+		owner:   cfg.Owner,
+		product: cfg.ProductName,
+		teams:   cfg.N2Teams,
 	}
+}
+
+func NewFromEnv() *Client {
+	return New(config.LoadFromEnv().GitHub)
 }
 
 func (c *Client) Enabled() bool {

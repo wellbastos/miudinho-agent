@@ -6,13 +6,15 @@ import (
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type AutoRemediationPolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 func (r *AutoRemediationPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -27,6 +29,11 @@ func (r *AutoRemediationPolicyReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	pol.Status.ObservedGeneration = pol.Generation
-	_ = r.Status().Update(ctx, pol)
+	if err := r.Status().Update(ctx, pol); err != nil {
+		return ctrl.Result{}, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(pol, "Normal", "Synced", "Policy observed generation updated to %d", pol.Generation)
+	}
 	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }

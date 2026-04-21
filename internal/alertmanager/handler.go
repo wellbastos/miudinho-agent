@@ -50,11 +50,16 @@ func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var failed []string
 	for _, alert := range payload.Alerts {
 		if err := h.upsertIncident(r.Context(), alert); err != nil {
-			http.Error(w, fmt.Sprintf("failed to persist incident: %v", err), http.StatusInternalServerError)
-			return
+			failed = append(failed, err.Error())
 		}
+	}
+
+	if len(failed) > 0 {
+		http.Error(w, fmt.Sprintf("failed to persist %d alerts", len(failed)), http.StatusInternalServerError)
+		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)

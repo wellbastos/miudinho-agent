@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
+
+	"github.com/wellbastos/miudinho-agent/internal/config"
 )
 
 type GeminiClient struct {
@@ -17,11 +18,11 @@ type GeminiClient struct {
 	HTTP    *http.Client
 }
 
-func NewGeminiClient() *GeminiClient {
+func NewGeminiClient(cfg config.LLMConfig) *GeminiClient {
 	return &GeminiClient{
-		BaseURL: getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com"),
-		Model:   getenv("GEMINI_MODEL", "gemini-1.5-pro"),
-		APIKey:  os.Getenv("GOOGLE_API_KEY"),
+		BaseURL: cfg.GeminiBaseURL,
+		Model:   cfg.GeminiModel,
+		APIKey:  cfg.GoogleAPIKey,
 		HTTP:    &http.Client{Timeout: 20 * time.Second},
 	}
 }
