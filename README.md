@@ -99,6 +99,19 @@ make test
 make lint
 ```
 
+Rodando direto com Go:
+
+```bash
+go test ./...
+```
+
+Hoje a suíte cobre principalmente componentes isolados e sem dependência de cluster:
+
+- `internal/rca`
+- `internal/githubissues`
+- `internal/alertmanager`
+- `internal/telemetry`
+
 ### Executar localmente
 
 ```bash
@@ -126,6 +139,13 @@ O binário inicia:
 - webhook inbound em `ALERT_WEBHOOK_ADDR` com padrão `:8090`
 - probes do controller-runtime em `:8080`
 - métricas do controller-runtime em `:8081`
+
+Se o ambiente local tiver restrições de cache do Go, você pode isolar os diretórios de cache dentro do workspace:
+
+```bash
+env GOMODCACHE=$(pwd)/.gomodcache GOCACHE=$(pwd)/.gocache go test ./...
+env GOMODCACHE=$(pwd)/.gomodcache GOCACHE=$(pwd)/.gocache go build -o bin/manager ./cmd/manager
+```
 
 ## Geração de manifests
 
