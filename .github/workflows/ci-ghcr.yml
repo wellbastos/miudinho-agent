@@ -45,7 +45,7 @@ jobs:
 
       - name: Run gofmt check
         run: |
-          test -z "$(gofmt -l .)"
+          test -z "$(git ls-files '*.go' | xargs gofmt -l)"
 
       - name: Run go vet
         run: go vet ./...
