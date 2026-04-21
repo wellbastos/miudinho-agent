@@ -274,17 +274,23 @@ func (s stubNotifier) Sync(context.Context, *sre.PredictiveIncident, *rca.Decisi
 
 type githubErrorClient struct{}
 
-func (*githubErrorClient) Enabled() bool { return true }
+func (*githubErrorClient) Enabled() bool            { return true }
 func (*githubErrorClient) Repository(string) string { return "apps-checkout" }
 func (*githubErrorClient) CreateIssue(context.Context, string, string, string, []string) (*githubissues.Issue, error) {
 	return nil, errors.New("create failed")
 }
-func (*githubErrorClient) AddComment(context.Context, string, int, string) error { return errors.New("comment failed") }
-func (*githubErrorClient) CloseIssue(context.Context, string, int) error { return errors.New("close failed") }
-func (*githubErrorClient) TeamSlugs() []string { return []string{"sre"} }
+func (*githubErrorClient) AddComment(context.Context, string, int, string) error {
+	return errors.New("comment failed")
+}
+func (*githubErrorClient) CloseIssue(context.Context, string, int) error {
+	return errors.New("close failed")
+}
+func (*githubErrorClient) TeamSlugs() []string    { return []string{"sre"} }
 func (*githubErrorClient) TeamMentions() []string { return []string{"@org/sre"} }
 
 type alertErrorClient struct{}
 
 func (*alertErrorClient) Enabled() bool { return true }
-func (*alertErrorClient) Send(context.Context, []alertmanager.Alert) error { return errors.New("send failed") }
+func (*alertErrorClient) Send(context.Context, []alertmanager.Alert) error {
+	return errors.New("send failed")
+}

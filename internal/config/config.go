@@ -12,21 +12,21 @@ type HTTPConfig struct {
 }
 
 type ObservabilityConfig struct {
-	PromURL                 string
-	TempoURL                string
-	TempoPredictivePath     string
+	PromURL                   string
+	TempoURL                  string
+	TempoPredictivePath       string
 	TempoPredictiveQueryParam string
-	AlertmanagerOutboundURL string
+	AlertmanagerOutboundURL   string
 }
 
 type LLMConfig struct {
-	RoutingMode   string
-	OllamaBaseURL string
-	OllamaModel   string
-	GeminiBaseURL string
-	GeminiModel   string
-	GoogleAPIKey  string
-	SystemPrompt  string
+	RoutingMode    string
+	OllamaBaseURL  string
+	OllamaModel    string
+	GeminiBaseURL  string
+	GeminiModel    string
+	GoogleAPIKey   string
+	SystemPrompt   string
 	ApproverPrompt string
 }
 
@@ -39,10 +39,10 @@ type GitHubConfig struct {
 }
 
 type ExecutionConfig struct {
-	ExecuteActions    bool
-	AutoObserveOnly   bool
-	ObserveOnlyTTL    time.Duration
-	LeaderElection    bool
+	ExecuteActions  bool
+	AutoObserveOnly bool
+	ObserveOnlyTTL  time.Duration
+	LeaderElection  bool
 }
 
 type AppConfig struct {
