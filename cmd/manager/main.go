@@ -39,7 +39,10 @@ func main() {
 	flag.Parse()
 	cfg.Execution.LeaderElection = leaderElection
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(zap.New(
+		zap.UseFlagOptions(&opts),
+		zap.JSONEncoder(),
+	))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
