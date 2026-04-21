@@ -1,0 +1,3 @@
+resources:
+  - ../../examples/autoremediationpolicy.yaml
+  - ../../examples/slopolicy.yaml

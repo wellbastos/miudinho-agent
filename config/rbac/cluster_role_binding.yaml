@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: miudinho-agent
+subjects:
+  - kind: ServiceAccount
+    name: miudinho-agent
+    namespace: o11y
+roleRef:
+  kind: ClusterRole
+  name: miudinho-agent
+  apiGroup: rbac.authorization.k8s.io

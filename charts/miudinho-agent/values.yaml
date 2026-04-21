@@ -1,0 +1,55 @@
+replicaCount: 1
+
+image:
+  repository: SEU_REGISTRY/miudinho-agent
+  tag: "0.1"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+
+service:
+  type: ClusterIP
+  ports:
+    webhook: 8090
+    probe: 8080
+
+secret:
+  create: true
+  name: ""
+  googleApiKey: "COLOQUE_AQUI"
+  githubToken: "COLOQUE_AQUI"
+
+env:
+  alertWebhookAddr: ":8090"
+  alertmanagerOutboundUrl: "http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts"
+  promUrl: "http://thanos-query.o11y.svc.cluster.local:10901"
+  tempoUrl: "http://tempo.o11y.svc.cluster.local:3100"
+  tempoPredictivePath: "api/search"
+  tempoPredictiveQueryParam: "q"
+  ollamaBaseUrl: "http://ollama.o11y.svc.cluster.local:11434"
+  ollamaModel: "llama3.1:8b"
+  geminiBaseUrl: "https://generativelanguage.googleapis.com"
+  geminiModel: "gemini-1.5-pro"
+  githubOwner: "yourorg"
+  githubProductName: "produto"
+  githubN2Teams: "sq-sre-admin,sq-sre-editor,sq-ser-viewer"
+  llmRoutingMode: "ollama_only"
+  autoObserveOnly: "true"
+  observeOnlyTtlSeconds: "300"
+  executeActions: "false"
+
+resources: {}
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

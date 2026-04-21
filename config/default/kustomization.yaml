@@ -1,0 +1,9 @@
+namespace: o11y
+resources:
+  - ../crd
+  - ../rbac/service_account.yaml
+  - ../rbac/cluster_role.yaml
+  - ../rbac/cluster_role_binding.yaml
+  - ../manager/secret.yaml
+  - ../manager/deployment.yaml
+  - ../manager/service.yaml

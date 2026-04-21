@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "miudinho-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miudinho-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "miudinho-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miudinho-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "miudinho-agent.serviceAccountName" . }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--health-probe-bind-address=:8080"
+            - "--metrics-bind-address=:8081"
+          ports:
+            - name: probe
+              containerPort: 8080
+            - name: metrics
+              containerPort: 8081
+            - name: webhook
+              containerPort: 8090
+          env:
+            - name: ALERT_WEBHOOK_ADDR
+              value: {{ .Values.env.alertWebhookAddr | quote }}
+            - name: ALERTMANAGER_OUTBOUND_URL
+              value: {{ .Values.env.alertmanagerOutboundUrl | quote }}
+            - name: PROM_URL
+              value: {{ .Values.env.promUrl | quote }}
+            - name: TEMPO_URL
+              value: {{ .Values.env.tempoUrl | quote }}
+            - name: TEMPO_PREDICTIVE_PATH
+              value: {{ .Values.env.tempoPredictivePath | quote }}
+            - name: TEMPO_PREDICTIVE_QUERY_PARAM
+              value: {{ .Values.env.tempoPredictiveQueryParam | quote }}
+            - name: OLLAMA_BASE_URL
+              value: {{ .Values.env.ollamaBaseUrl | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.env.ollamaModel | quote }}
+            - name: GEMINI_BASE_URL
+              value: {{ .Values.env.geminiBaseUrl | quote }}
+            - name: GEMINI_MODEL
+              value: {{ .Values.env.geminiModel | quote }}
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: GOOGLE_API_KEY
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: GITHUB_TOKEN
+            - name: GITHUB_OWNER
+              value: {{ .Values.env.githubOwner | quote }}
+            - name: GITHUB_PRODUCT_NAME
+              value: {{ .Values.env.githubProductName | quote }}
+            - name: GITHUB_N2_TEAMS
+              value: {{ .Values.env.githubN2Teams | quote }}
+            - name: LLM_ROUTING_MODE
+              value: {{ .Values.env.llmRoutingMode | quote }}
+            - name: AUTO_OBSERVE_ONLY
+              value: {{ .Values.env.autoObserveOnly | quote }}
+            - name: OBSERVE_ONLY_TTL_SECONDS
+              value: {{ .Values.env.observeOnlyTtlSeconds | quote }}
+            - name: EXECUTE_ACTIONS
+              value: {{ .Values.env.executeActions | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probe
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probe
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

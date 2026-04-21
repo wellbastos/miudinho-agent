@@ -1,0 +1,4 @@
+resources:
+  - bases/sre.o11y.io_predictiveincidents.yaml
+  - bases/sre.o11y.io_autoremediationpolicies.yaml
+  - bases/sre.o11y.io_slopolicies.yaml

@@ -1,0 +1,23 @@
+apiVersion: sre.o11y.io/v1alpha1
+kind: SLOPolicy
+metadata:
+  name: svc-a-slo
+  namespace: o11y
+spec:
+  service:
+    namespace: o11y
+    service: "svc-a"
+    job: "svc-a"
+  objective:
+    target: 0.999
+    window: "30d"
+  signals:
+    http5xx:
+      errorRateThresholdPct: 1.0
+      slopeThreshold: 0.0
+      min5xxRPS: 0.1
+    oom:
+      timeToOomThresholdSeconds: 900
+    latency:
+      enabled: true
+  scheduleSeconds: 120
