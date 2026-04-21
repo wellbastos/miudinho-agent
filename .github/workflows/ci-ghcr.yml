@@ -14,6 +14,7 @@ on:
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 env:
   GO_VERSION: "1.25.9"
@@ -23,8 +24,8 @@ env:
   CHART_REGISTRY: ghcr.io/${{ github.repository_owner }}
 
 jobs:
-  test-and-build:
-    name: Test And Build
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
 
     steps:
@@ -37,24 +38,89 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Download Go modules
-        run: go mod download
-
       - name: Verify module files
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
 
-      - name: Run tests
+      - name: Run gofmt check
+        run: |
+          test -z "$(gofmt -l .)"
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.4.0
+          args: --timeout=5m ./...
+
+      - name: Lint Helm chart
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Helm lint
+        run: helm lint ${{ env.CHART_PATH }}
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run unit tests
         run: go test ./... -coverprofile=cover.out
 
       - name: Build manager binary
         run: go build -o bin/manager ./cmd/manager
 
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          vuln-type: library
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
   docker:
     name: Build And Publish Image
     runs-on: ubuntu-latest
-    needs: test-and-build
+    needs:
+      - lint
+      - test
+      - security
     if: github.event_name != 'pull_request'
 
     steps:
@@ -96,7 +162,10 @@ jobs:
   helm-chart:
     name: Package And Publish Helm Chart
     runs-on: ubuntu-latest
-    needs: test-and-build
+    needs:
+      - lint
+      - test
+      - security
     if: github.event_name != 'pull_request'
 
     steps:
@@ -113,9 +182,6 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             --username "${{ github.actor }}" \
             --password-stdin
-
-      - name: Lint Helm chart
-        run: helm lint ${{ env.CHART_PATH }}
 
       - name: Package Helm chart
         run: |
