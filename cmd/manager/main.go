@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"github.com/wellbastos/miudinho-agent/controllers"
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
-	"github.com/wellbastos/miudinho-agent/internal/events"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -89,8 +87,6 @@ func main() {
 		}
 		_ = srv.ListenAndServe()
 	}()
-
-	go events.StartWatcher(context.Background(), mgr.GetConfig(), mgr.GetClient())
 
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		os.Exit(1)
