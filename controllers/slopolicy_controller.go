@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	sre "github.com/yourorg/miudinho-agent/api/v1alpha1"
-	"github.com/yourorg/miudinho-agent/internal/telemetry"
+	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
+	"github.com/wellbastos/miudinho-agent/internal/telemetry"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"

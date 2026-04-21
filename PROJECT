@@ -2,7 +2,7 @@ domain: o11y.io
 layout:
 - go.kubebuilder.io/v4
 projectName: miudinho-agent
-repo: github.com/yourorg/miudinho-agent
+repo: github.com/wellbastos/miudinho-agent
 version: "3"
 resources:
 - api:
@@ -12,7 +12,7 @@ resources:
   domain: o11y.io
   group: sre
   kind: PredictiveIncident
-  path: github.com/yourorg/miudinho-agent/api/v1alpha1
+  path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -21,7 +21,7 @@ resources:
   domain: o11y.io
   group: sre
   kind: AutoRemediationPolicy
-  path: github.com/yourorg/miudinho-agent/api/v1alpha1
+  path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -30,5 +30,5 @@ resources:
   domain: o11y.io
   group: sre
   kind: SLOPolicy
-  path: github.com/yourorg/miudinho-agent/api/v1alpha1
+  path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1

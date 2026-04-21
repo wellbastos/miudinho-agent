@@ -38,8 +38,8 @@ env:
   ollamaModel: "llama3.1:8b"
   geminiBaseUrl: "https://generativelanguage.googleapis.com"
   geminiModel: "gemini-1.5-pro"
-  githubOwner: "yourorg"
-  githubProductName: "produto"
+  githubOwner: "wellbastos"
+  githubProductName: "miudinho-agent" # repo name
   githubN2Teams: "sq-sre-admin,sq-sre-editor,sq-ser-viewer"
   llmRoutingMode: "ollama_only"
   autoObserveOnly: "true"

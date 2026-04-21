@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	sre "github.com/yourorg/miudinho-agent/api/v1alpha1"
+	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"

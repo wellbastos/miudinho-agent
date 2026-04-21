@@ -1,4 +1,4 @@
-module github.com/yourorg/miudinho-agent
+module github.com/wellbastos/miudinho-agent
 
 go 1.22
 
