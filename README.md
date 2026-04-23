@@ -423,3 +423,7 @@ receivers:
     webhook_configs:
       - url: http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/alerts
 ```
+
+## Licença
+
+Este projeto está licenciado sob a licença MIT. Veja [LICENSE](/Users/well/code-mac/miudinho-agent/LICENSE:1).
