@@ -427,3 +427,4 @@ receivers:
 ## Licença
 
 Este projeto está licenciado sob a licença MIT. Veja [LICENSE](/Users/well/code-mac/miudinho-agent/LICENSE:1).
+
