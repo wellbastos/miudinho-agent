@@ -18,10 +18,12 @@ permissions:
 
 env:
   GO_VERSION: "1.25.9"
-  IMAGE_NAME: ghcr.io/${{ github.repository }}
   CHART_NAME: miudinho-agent
   CHART_PATH: ./charts/miudinho-agent
-  CHART_REGISTRY: ghcr.io/${{ github.repository_owner }}
+
+concurrency:
+  group: ci-publish-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -127,6 +129,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize registry coordinates
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "CHART_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -153,6 +160,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -171,6 +179,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Normalize chart registry
+        run: echo "CHART_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
