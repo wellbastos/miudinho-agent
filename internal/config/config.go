@@ -17,6 +17,7 @@ type ObservabilityConfig struct {
 	TempoPredictivePath       string
 	TempoPredictiveQueryParam string
 	AlertmanagerOutboundURL   string
+	AlertmanagerAPIURL        string
 }
 
 type LLMConfig struct {
@@ -34,8 +35,18 @@ type GitHubConfig struct {
 	APIURL      string
 	Token       string
 	Owner       string
+	RepoPrefix  string
 	ProductName string
 	N2Teams     []string
+}
+
+type NotificationsConfig struct {
+	GoogleChatIncidentsWebhookURL string
+}
+
+type AlertPollingConfig struct {
+	Interval time.Duration
+	Sources  []string
 }
 
 type ExecutionConfig struct {
@@ -50,6 +61,8 @@ type AppConfig struct {
 	Observability ObservabilityConfig
 	LLM           LLMConfig
 	GitHub        GitHubConfig
+	Notifications NotificationsConfig
+	AlertPolling  AlertPollingConfig
 	Execution     ExecutionConfig
 }
 
@@ -64,6 +77,7 @@ func LoadFromEnv() AppConfig {
 			TempoPredictivePath:       getenv("TEMPO_PREDICTIVE_PATH", "api/search"),
 			TempoPredictiveQueryParam: getenv("TEMPO_PREDICTIVE_QUERY_PARAM", "q"),
 			AlertmanagerOutboundURL:   strings.TrimSpace(os.Getenv("ALERTMANAGER_OUTBOUND_URL")),
+			AlertmanagerAPIURL:        strings.TrimSpace(os.Getenv("ALERTMANAGER_API_URL")),
 		},
 		LLM: LLMConfig{
 			RoutingMode:    getenv("LLM_ROUTING_MODE", "ollama_only"),
@@ -79,8 +93,16 @@ func LoadFromEnv() AppConfig {
 			APIURL:      getenv("GITHUB_API_URL", "https://api.github.com"),
 			Token:       strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 			Owner:       strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
+			RepoPrefix:  getenv("GITHUB_REPOSITORY_PREFIX", "apps-"),
 			ProductName: strings.TrimSpace(os.Getenv("GITHUB_PRODUCT_NAME")),
-			N2Teams:     splitCSV(getenv("GITHUB_N2_TEAMS", "sq-sre-admin,sq-sre-editor,sq-ser-viewer")),
+			N2Teams:     splitCSV(getenv("GITHUB_N2_TEAMS", "sre-editor,sre-viewer,sre-admin")),
+		},
+		Notifications: NotificationsConfig{
+			GoogleChatIncidentsWebhookURL: strings.TrimSpace(os.Getenv("GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL")),
+		},
+		AlertPolling: AlertPollingConfig{
+			Interval: parseDuration(getenv("ALERT_POLL_INTERVAL", "30s"), 30*time.Second),
+			Sources:  splitCSV(getenv("ALERT_SOURCES_ENABLED", "prometheus,alertmanager")),
 		},
 		Execution: ExecutionConfig{
 			ExecuteActions:  os.Getenv("EXECUTE_ACTIONS") == "true",
@@ -104,6 +126,14 @@ func parseSeconds(raw string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func parseDuration(raw string, fallback time.Duration) time.Duration {
+	duration, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || duration <= 0 {
+		return fallback
+	}
+	return duration
 }
 
 func splitCSV(raw string) []string {

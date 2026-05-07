@@ -33,3 +33,38 @@ func TestRecordReconcile(t *testing.T) {
 		t.Fatalf("expected reconcile histogram sample sum to increase, got before=%v after=%v", durationBefore, durationAfter)
 	}
 }
+
+func TestRecordAlertPollAndEscalationMetrics(t *testing.T) {
+	beforePoll := testutil.ToFloat64(alertPollRequestsTotal.WithLabelValues("prometheus", "success"))
+	beforeCollected := testutil.ToFloat64(alertsCollectedTotal.WithLabelValues("prometheus"))
+	beforeDedup := testutil.ToFloat64(alertsDeduplicatedTotal)
+	beforeSync := testutil.ToFloat64(polledIncidentsSyncedTotal.WithLabelValues("created"))
+	beforeEscalation := testutil.ToFloat64(escalationNotificationsTotal.WithLabelValues("google_chat", "success"))
+
+	RecordAlertPoll("prometheus", "success", 50*time.Millisecond, 3)
+	RecordAlertDeduplicated(2)
+	RecordPolledIncidentSync("created")
+	RecordEscalationNotification("google_chat", "success")
+
+	afterPoll := testutil.ToFloat64(alertPollRequestsTotal.WithLabelValues("prometheus", "success"))
+	afterCollected := testutil.ToFloat64(alertsCollectedTotal.WithLabelValues("prometheus"))
+	afterDedup := testutil.ToFloat64(alertsDeduplicatedTotal)
+	afterSync := testutil.ToFloat64(polledIncidentsSyncedTotal.WithLabelValues("created"))
+	afterEscalation := testutil.ToFloat64(escalationNotificationsTotal.WithLabelValues("google_chat", "success"))
+
+	if afterPoll != beforePoll+1 {
+		t.Fatalf("expected poll counter increment, before=%v after=%v", beforePoll, afterPoll)
+	}
+	if afterCollected != beforeCollected+3 {
+		t.Fatalf("expected collected counter increment, before=%v after=%v", beforeCollected, afterCollected)
+	}
+	if afterDedup != beforeDedup+2 {
+		t.Fatalf("expected deduplicated counter increment, before=%v after=%v", beforeDedup, afterDedup)
+	}
+	if afterSync != beforeSync+1 {
+		t.Fatalf("expected incident sync counter increment, before=%v after=%v", beforeSync, afterSync)
+	}
+	if afterEscalation != beforeEscalation+1 {
+		t.Fatalf("expected escalation counter increment, before=%v after=%v", beforeEscalation, afterEscalation)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/wellbastos/miudinho-agent/controllers"
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
 	"github.com/wellbastos/miudinho-agent/internal/config"
+	"github.com/wellbastos/miudinho-agent/internal/incidentpoller"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -88,6 +89,9 @@ func main() {
 	engine := rca.NewEngine(cfg)
 	handler := alertmanager.NewHandler(mgr.GetClient())
 	if err := mgr.Add(alertmanager.NewServer(cfg, handler, engine)); err != nil {
+		os.Exit(1)
+	}
+	if err := mgr.Add(incidentpoller.New(mgr.GetClient(), cfg)); err != nil {
 		os.Exit(1)
 	}
 

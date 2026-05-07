@@ -1,4 +1,4 @@
-apiVersion: sre.o11y.io/v1alpha1
+apiVersion: miudinho.o11y.io/v1alpha1
 kind: AutoRemediationPolicy
 metadata:
   name: default-observe

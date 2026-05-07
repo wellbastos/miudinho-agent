@@ -122,6 +122,57 @@ func TestPredictiveIncidentReconcileMarksApprovalDeniedAsBlocked(t *testing.T) {
 	}
 }
 
+func TestPredictiveIncidentReconcileEscalatesAlertmanagerWithoutSafeAction(t *testing.T) {
+	scheme := newTestScheme(t)
+	incident := &sre.PredictiveIncident{
+		ObjectMeta: metav1.ObjectMeta{Name: "pi-unsafe", Namespace: "default"},
+		Spec: sre.PredictiveIncidentSpec{
+			Source:   sre.SourceAlertmanager,
+			Severity: "critical",
+			Identity: sre.IncidentIdentity{Namespace: "default", Service: "checkout", Job: "checkout"},
+		},
+	}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&sre.PredictiveIncident{}).
+		WithObjects(incident).
+		Build()
+
+	r := &PredictiveIncidentReconciler{
+		Client: cl,
+		Scheme: scheme,
+		Config: config.AppConfig{
+			Execution: config.ExecutionConfig{ExecuteActions: false},
+		},
+		Evidence: stubEvidenceCollector{},
+		Policies: stubPolicyResolver{},
+		DecisionSvc: stubDecisionService{
+			eval: IncidentEvaluation{
+				Decision: &rca.Decision{Classification: "http-5xx", Confidence: 0.95, Summary: "restart candidate"},
+				Approval: &rca.Approval{Approved: true},
+			},
+		},
+		Actions:  stubActionExecutor{},
+		Notifier: stubNotifier{},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(incident)}); err != nil {
+		t.Fatalf("Reconcile returned error: %v", err)
+	}
+
+	got := &sre.PredictiveIncident{}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(incident), got); err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if got.Status.Phase != sre.PhaseBlocked {
+		t.Fatalf("expected blocked phase, got %s", got.Status.Phase)
+	}
+	if got.Status.BlockedReason != "no_safe_action" {
+		t.Fatalf("expected no_safe_action reason, got %q", got.Status.BlockedReason)
+	}
+}
+
 func TestMatchIncidentLabels(t *testing.T) {
 	pi := &sre.PredictiveIncident{
 		ObjectMeta: metav1.ObjectMeta{
@@ -198,13 +249,58 @@ func TestNotifierSyncAggregatesErrors(t *testing.T) {
 	notifier := &DefaultIncidentNotifier{
 		GitHub: &githubErrorClient{},
 		Alert:  &alertErrorClient{},
+		Chat:   &chatErrorClient{},
 	}
 	err := notifier.Sync(context.Background(), pi, &rca.Decision{Escalation: map[string]any{"needed": true}}, true)
 	if err == nil {
 		t.Fatal("expected aggregated error")
 	}
-	if !strings.Contains(err.Error(), "github:") || !strings.Contains(err.Error(), "alertmanager:") {
+	if !strings.Contains(err.Error(), "github:") || !strings.Contains(err.Error(), "alertmanager:") || !strings.Contains(err.Error(), "googlechat:") {
 		t.Fatalf("expected both error sources, got %v", err)
+	}
+}
+
+func TestIssueRepositoryUsesAlertLabelWhenPresent(t *testing.T) {
+	pi := &sre.PredictiveIncident{
+		Spec: sre.PredictiveIncidentSpec{
+			Identity: sre.IncidentIdentity{Service: "checkout"},
+			Alert: map[string]any{
+				"labels": map[string]any{
+					"github_repository": "custom-repo",
+				},
+			},
+		},
+	}
+	gh := &githubSuccessClient{}
+
+	if got := issueRepositoryForIncident(pi, gh); got != "custom-repo" {
+		t.Fatalf("expected custom repo from alert label, got %q", got)
+	}
+}
+
+func TestSyncGoogleChatEscalationMarksStatus(t *testing.T) {
+	pi := &sre.PredictiveIncident{
+		ObjectMeta: metav1.ObjectMeta{Name: "pi-4", Namespace: "default"},
+		Spec: sre.PredictiveIncidentSpec{
+			Title:    "HighErrorRate",
+			Severity: "critical",
+			Identity: sre.IncidentIdentity{Namespace: "default", Service: "checkout"},
+		},
+		Status: sre.PredictiveIncidentStatus{
+			Phase:         sre.PhaseBlocked,
+			BlockedReason: "approval_denied",
+		},
+	}
+	chat := &chatSuccessClient{}
+
+	if err := syncGoogleChatEscalation(context.Background(), pi, chat, &rca.Decision{Escalation: map[string]any{"reason": "llm_unavailable"}}, true); err != nil {
+		t.Fatalf("syncGoogleChatEscalation returned error: %v", err)
+	}
+	if !pi.Status.Chat.EscalationSent {
+		t.Fatal("expected chat escalation to be marked as sent")
+	}
+	if len(chat.messages) != 1 {
+		t.Fatalf("expected 1 chat message, got %d", len(chat.messages))
 	}
 }
 
@@ -293,4 +389,37 @@ type alertErrorClient struct{}
 func (*alertErrorClient) Enabled() bool { return true }
 func (*alertErrorClient) Send(context.Context, []alertmanager.Alert) error {
 	return errors.New("send failed")
+}
+
+type chatErrorClient struct{}
+
+func (*chatErrorClient) Enabled() bool { return true }
+func (*chatErrorClient) Send(context.Context, string) error {
+	return errors.New("send failed")
+}
+
+type chatSuccessClient struct {
+	messages []string
+}
+
+func (*chatSuccessClient) Enabled() bool { return true }
+func (c *chatSuccessClient) Send(_ context.Context, text string) error {
+	c.messages = append(c.messages, text)
+	return nil
+}
+
+type githubSuccessClient struct{}
+
+func (*githubSuccessClient) Enabled() bool            { return true }
+func (*githubSuccessClient) Repository(string) string { return "apps-checkout" }
+func (*githubSuccessClient) CreateIssue(context.Context, string, string, string, []string) (*githubissues.Issue, error) {
+	return &githubissues.Issue{}, nil
+}
+func (*githubSuccessClient) AddComment(context.Context, string, int, string) error { return nil }
+func (*githubSuccessClient) CloseIssue(context.Context, string, int) error         { return nil }
+func (*githubSuccessClient) TeamSlugs() []string {
+	return []string{"sre-editor", "sre-viewer", "sre-admin"}
+}
+func (*githubSuccessClient) TeamMentions() []string {
+	return []string{"@org/sre-editor", "@org/sre-viewer", "@org/sre-admin"}
 }

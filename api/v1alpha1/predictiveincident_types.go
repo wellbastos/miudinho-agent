@@ -60,6 +60,11 @@ type AlertmanagerStatus struct {
 	LastSentTime   string `json:"lastSentTime,omitempty"`
 }
 
+type GoogleChatStatus struct {
+	EscalationSent bool   `json:"escalationSent,omitempty"`
+	LastSentTime   string `json:"lastSentTime,omitempty"`
+}
+
 type ActionStatus struct {
 	Name       string         `json:"name,omitempty"`
 	Tool       string         `json:"tool,omitempty"`
@@ -89,6 +94,7 @@ type PredictiveIncidentStatus struct {
 	Actions  []ActionStatus     `json:"actions,omitempty"`
 	GitHub   GitHubIssueStatus  `json:"github,omitempty"`
 	Alerting AlertmanagerStatus `json:"alerting,omitempty"`
+	Chat     GoogleChatStatus   `json:"chat,omitempty"`
 
 	BlockedReason  string `json:"blockedReason,omitempty"`
 	BlockedDetails string `json:"blockedDetails,omitempty"`

@@ -9,12 +9,13 @@ O `miudinho-agent` observa sinais de incidente, cria recursos `PredictiveInciden
 Principais capacidades:
 
 - recebe alertas do Alertmanager em `/api/v1/alerts`
-- gera incidentes preditivos a partir de `SLOPolicy`
+- consulta alertas ativos por polling em Prometheus e Alertmanager API
+- gera incidentes preditivos a partir de `SLOPolicy` global ou específico
 - enriquece incidentes com dados de Prometheus e Tempo
 - executa RCA com Ollama e/ou Gemini
 - aplica guardrails antes de ações mutáveis
 - pode reiniciar pods ou executar rollout restart em deployments
-- integra com GitHub Issues para acompanhamento e escalonamento operacional
+- integra com GitHub Issues, Google Chat e escalonamento operacional
 
 ## Recursos Kubernetes
 
@@ -28,12 +29,12 @@ Os manifests gerados dessas CRDs ficam em `config/crd/bases/` e são copiados pa
 
 ## Fluxo operacional
 
-1. Um incidente entra por webhook do Alertmanager ou é criado por análise preditiva via `SLOPolicy`.
+1. Um incidente entra por webhook do Alertmanager, por polling nas APIs de alertas, ou é criado por análise preditiva via `SLOPolicy`.
 2. O controller cria ou atualiza um `PredictiveIncident`.
 3. O incidente é enriquecido com evidências de Prometheus e Tempo.
 4. O motor de RCA consulta o modo configurado em `LLM_ROUTING_MODE`.
 5. O operador decide entre observar, bloquear, mitigar ou escalar.
-6. Quando habilitado, o incidente abre ou atualiza uma issue no GitHub e pode enviar alerta outbound para outro Alertmanager.
+6. Quando habilitado, o incidente abre ou atualiza uma issue no GitHub, fecha a issue na resolução e pode escalar para N2 via comentário, Alertmanager outbound e Google Chat.
 
 Fases esperadas do incidente:
 
@@ -60,6 +61,7 @@ flowchart TD
     PIC --> K8S[Kubernetes API]
 
     PIC --> GH[GitHub Issues]
+    PIC --> CHAT[Google Chat incidents-sre]
     PIC --> AMOUT[Alertmanager Outbound]
 
     K8S -->|restart pod / rollout restart| ACT[Mitigation]
@@ -153,6 +155,9 @@ Métricas customizadas expostas no mesmo endpoint `/metrics`:
 - `miudinho_agent_reconcile_duration_seconds`
 - `miudinho_agent_alertmanager_webhook_requests_total`
 - `miudinho_agent_alertmanager_webhook_request_duration_seconds`
+- `miudinho_agent_alert_poll_requests_total`
+- `miudinho_agent_alerts_collected_total`
+- `miudinho_agent_alerts_deduplicated_total`
 - `miudinho_agent_resolved_alerts_total`
 
 Se o ambiente local tiver restrições de cache do Go, você pode isolar os diretórios de cache dentro do workspace:
@@ -233,11 +238,46 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --set image.tag=0.1.0 \
   --set secret.googleApiKey="$GOOGLE_API_KEY" \
   --set secret.githubToken="$GITHUB_TOKEN" \
+  --set secret.googleChatIncidentsWebhookUrl="$GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL" \
   --set env.githubOwner=seu-org \
   --set env.githubProductName=produto \
-  --set env.githubN2Teams="sq-sre-admin,sq-sre-editor,sq-ser-viewer" \
-  --set env.alertmanagerOutboundUrl=http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts
+  --set env.githubN2Teams="sre-editor,sre-viewer,sre-admin" \
+  --set env.alertmanagerOutboundUrl=http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts \
+  --set env.alertmanagerApiUrl=http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts
 ```
+
+### Deploy mínimo para SLO global
+
+Para o modo preditivo sem criar um `SLOPolicy` por app, rotule os `Service`s monitorados e aplique uma policy global.
+
+Exemplo de label no `Service`:
+
+```yaml
+metadata:
+  labels:
+    miudinho.o11y.io/enabled: "true"
+```
+
+Exemplo de instalação com Prometheus e Gemini:
+
+```bash
+helm upgrade --install miudinho-agent ./charts/miudinho-agent \
+  --namespace o11y \
+  --create-namespace \
+  --set image.repository=ghcr.io/seu-owner/miudinho-agent \
+  --set image.tag=latest \
+  --set env.promUrl=http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090 \
+  --set env.tempoUrl=http://tempo.monitoring.svc.cluster.local:3100 \
+  --set env.llmRoutingMode=gemini_only \
+  --set secret.googleApiKey="$GOOGLE_API_KEY"
+```
+
+Observações importantes:
+
+- o caminho preditivo consulta métricas no Prometheus
+- o caminho reativo aceita webhook inbound do Alertmanager e também faz polling de alertas ativos em Prometheus e Alertmanager API
+- o `Service` do chart é `ClusterIP`; para tráfego externo, exponha com `Ingress`, `LoadBalancer` ou `port-forward`
+- o chart precisa listar `Service`s para o modo global de `SLOPolicy`
 
 Usando os alvos do `Makefile`:
 
@@ -250,9 +290,49 @@ make uninstall NAMESPACE=o11y
 
 ## Configuração
 
+### SLOPolicy global
+
+O campo `spec.service` aceita dois modos:
+
+- específico: define `namespace`, `service` e opcionalmente `job`
+- global: define `namespace` e `matchLabels` para descobrir vários `Service`s automaticamente
+
+Quando `service` não é informado, o reconciler lista `Service`s compatíveis com `matchLabels` e cria ou atualiza um `PredictiveIncident` por alvo encontrado.
+
+Exemplo:
+
+```yaml
+apiVersion: miudinho.o11y.io/v1alpha1
+kind: SLOPolicy
+metadata:
+  name: global-slo
+  namespace: o11y
+spec:
+  service:
+    namespace: apps
+    matchLabels:
+      miudinho.o11y.io/enabled: "true"
+  objective:
+    target: 0.999
+    window: "30d"
+  signals:
+    http5xx:
+      errorRateThresholdPct: 1.0
+      slopeThreshold: 0.0
+      min5xxRPS: 0.1
+  scheduleSeconds: 120
+```
+
+Convenções atuais do reconciler:
+
+- o `job` cai para o nome do `Service` quando não é informado explicitamente
+- labels do `Service` são propagadas para o `PredictiveIncident`
+- as queries esperam métricas `http_requests_total` com labels `namespace`, `service`, `job` e `status`
+
 ### Variáveis de observabilidade
 
 - `PROM_URL`
+- `ALERTMANAGER_API_URL`
 - `TEMPO_URL`
 - `TEMPO_PREDICTIVE_PATH`
 - `TEMPO_PREDICTIVE_QUERY_PARAM`
@@ -271,14 +351,21 @@ make uninstall NAMESPACE=o11y
 
 - `GITHUB_TOKEN`
 - `GITHUB_OWNER`
+- `GITHUB_REPOSITORY_PREFIX`
 - `GITHUB_PRODUCT_NAME`
 - `GITHUB_N2_TEAMS`
 
-`GITHUB_PRODUCT_NAME=foo` faz o operador interagir com o repositório `apps-foo`.
+Com `GITHUB_REPOSITORY_PREFIX=apps` e `GITHUB_PRODUCT_NAME=foo`, o operador interage com o repositório `apps-foo`.
+
+### Variáveis de notificação
+
+- `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
 
 ### Variáveis de execução
 
 - `ALERT_WEBHOOK_ADDR`
+- `ALERT_POLL_INTERVAL`
+- `ALERT_SOURCES_ENABLED`
 - `EXECUTE_ACTIONS`
 - `AUTO_OBSERVE_ONLY`
 - `OBSERVE_ONLY_TTL_SECONDS`
@@ -287,6 +374,26 @@ make uninstall NAMESPACE=o11y
 ## Métricas e Alloy
 
 O operator publica métricas Prometheus em `/metrics` na porta `8081`. O chart Helm agora expõe essa porta também no `Service`, então o Grafana Alloy pode fazer scrape e encaminhar as séries para Prometheus, Mimir ou outro backend compatível.
+
+Se você usa Prometheus Operator, o chart também pode criar um `ServiceMonitor`:
+
+```bash
+helm upgrade --install miudinho-agent ./charts/miudinho-agent \
+  --namespace o11y \
+  --create-namespace \
+  --set serviceMonitor.enabled=true \
+  --set serviceMonitor.labels.release=kube-prometheus-stack
+```
+
+Se preferir fazer scrape direto nos pods, o chart também suporta `PodMonitor`:
+
+```bash
+helm upgrade --install miudinho-agent ./charts/miudinho-agent \
+  --namespace o11y \
+  --create-namespace \
+  --set podMonitor.enabled=true \
+  --set podMonitor.labels.release=kube-prometheus-stack
+```
 
 Exemplo simples de scrape com Alloy:
 
@@ -322,6 +429,9 @@ As séries mais úteis para operação imediata são:
 - `miudinho_agent_reconcile_total{controller="predictiveincident"}`
 - `miudinho_agent_reconcile_duration_seconds`
 - `miudinho_agent_alertmanager_webhook_requests_total`
+- `miudinho_agent_alert_poll_requests_total`
+- `miudinho_agent_alerts_deduplicated_total`
+- `miudinho_agent_escalation_notifications_total`
 - `miudinho_agent_resolved_alerts_total`
 
 ## Modos de LLM
@@ -345,16 +455,33 @@ Campos mais usados:
 - `service.type`
 - `service.ports.webhook`
 - `service.ports.probe`
+- `service.ports.metrics`
+- `serviceMonitor.enabled`
+- `serviceMonitor.namespace`
+- `serviceMonitor.labels`
+- `serviceMonitor.interval`
+- `serviceMonitor.scrapeTimeout`
+- `serviceMonitor.path`
+- `podMonitor.enabled`
+- `podMonitor.namespace`
+- `podMonitor.labels`
+- `podMonitor.interval`
+- `podMonitor.scrapeTimeout`
+- `podMonitor.path`
 - `secret.create`
 - `secret.name`
 - `secret.googleApiKey`
 - `secret.githubToken`
+- `secret.googleChatIncidentsWebhookUrl`
 - `serviceAccount.create`
 - `serviceAccount.name`
 - `rbac.create`
 - `leaderElection.enabled`
 - `env.alertWebhookAddr`
+- `env.alertPollInterval`
+- `env.alertSourcesEnabled`
 - `env.alertmanagerOutboundUrl`
+- `env.alertmanagerApiUrl`
 - `env.promUrl`
 - `env.tempoUrl`
 - `env.ollamaBaseUrl`
@@ -362,6 +489,7 @@ Campos mais usados:
 - `env.geminiBaseUrl`
 - `env.geminiModel`
 - `env.githubOwner`
+- `env.githubRepositoryPrefix`
 - `env.githubProductName`
 - `env.githubN2Teams`
 - `env.llmRoutingMode`
@@ -385,6 +513,7 @@ Nesse caso, o secret precisa expor as chaves:
 
 - `GOOGLE_API_KEY`
 - `GITHUB_TOKEN`
+- `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
 
 ## Samples
 
@@ -406,14 +535,17 @@ Ou via `Makefile`:
 make apply-samples
 ```
 
+O sample de `SLOPolicy` usa o modo global e espera `Service`s com a label `miudinho.o11y.io/enabled: "true"` no namespace alvo.
+
 ## Endpoints e health checks
 
 - webhook inbound: `/api/v1/alerts`
+- fake alert para testes: `POST /api/v1/test/fake-alert`
 - liveness HTTP: `/healthz` na porta `8080`
 - readiness HTTP: `/readyz` na porta `8080`
 - métricas do controller-runtime: porta `8081`
 
-O `Service` do chart expõe apenas as portas de webhook e probe.
+O `Service` do chart expõe as portas de webhook, probe e métricas.
 
 Exemplo de receiver do Alertmanager:
 
@@ -424,7 +556,62 @@ receivers:
       - url: http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/alerts
 ```
 
+Exemplo para gerar um alerta sintético e validar a criação assíncrona de issue:
+
+```bash
+curl -X POST http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/test/fake-alert \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "namespace": "o11y",
+    "service": "checkout",
+    "severity": "warning",
+    "summary": "Miudinho synthetic issue test",
+    "description": "Synthetic alert generated to validate GitHub issue flow",
+    "github_repository": "apps-checkout"
+  }'
+```
+
+Payload aceito:
+
+- `namespace`: namespace do incidente sintético. Padrão: `default`
+- `service`: nome do serviço afetado. Padrão: `miudinho-test`
+- `job`: label `job` do alerta. Padrão: usa o mesmo valor de `service`
+- `severity`: severidade do alerta. Padrão: `warning`
+- `summary`: título curto do alerta/issue
+- `description`: descrição detalhada
+- `status`: estado inicial do alerta. Padrão: `firing`
+- `github_repository`: repositório exato para abrir a issue de teste
+
+Resposta esperada:
+
+```json
+{
+  "ok": true,
+  "message": "synthetic alert accepted; GitHub issue will be created asynchronously by the reconciler",
+  "incident_name": "pi-am-<fingerprint>",
+  "namespace": "o11y",
+  "service": "checkout",
+  "fingerprint": "<fingerprint>",
+  "status": "firing"
+}
+```
+
+Comportamento:
+
+- o endpoint cria um `PredictiveIncident` sintético com origem operacional
+- a issue de teste é aberta depois pelo reconciler normal, de forma assíncrona
+- quando enviado, `github_repository` tem prioridade sobre a convenção automática de repositório
+- o alerta criado recebe labels de teste, incluindo `miudinho_test_alert=true`
+
+Validação rápida:
+
+```bash
+kubectl -n o11y get predictiveincidents
+kubectl -n o11y logs deploy/miudinho-agent --tail=200
+```
+
+Se a integração com GitHub estiver configurada corretamente, a issue será criada no repositório informado em `github_repository` ou no repositório derivado pelo operador quando esse campo não for enviado.
+
 ## Licença
 
 Este projeto está licenciado sob a licença MIT. Veja [LICENSE](/Users/well/code-mac/miudinho-agent/LICENSE:1).
-

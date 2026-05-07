@@ -11,6 +11,8 @@ import (
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
 	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/githubissues"
+	"github.com/wellbastos/miudinho-agent/internal/googlechat"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"github.com/wellbastos/miudinho-agent/internal/telemetry"
 	appsv1 "k8s.io/api/apps/v1"
@@ -59,6 +61,11 @@ type GitHubIssueClient interface {
 type EscalationAlertClient interface {
 	Enabled() bool
 	Send(ctx context.Context, alerts []alertmanager.Alert) error
+}
+
+type GoogleChatClient interface {
+	Enabled() bool
+	Send(ctx context.Context, text string) error
 }
 
 type DefaultIncidentEvidenceCollector struct {
@@ -272,6 +279,7 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 type DefaultIncidentNotifier struct {
 	GitHub GitHubIssueClient
 	Alert  EscalationAlertClient
+	Chat   GoogleChatClient
 }
 
 func (n *DefaultIncidentNotifier) Sync(ctx context.Context, pi *sre.PredictiveIncident, decision *rca.Decision, shouldEscalate bool) error {
@@ -282,6 +290,9 @@ func (n *DefaultIncidentNotifier) Sync(ctx context.Context, pi *sre.PredictiveIn
 	if err := syncEscalationAlert(ctx, pi, n.Alert, decision, shouldEscalate); err != nil {
 		errs = append(errs, fmt.Errorf("alertmanager: %w", err))
 	}
+	if err := syncGoogleChatEscalation(ctx, pi, n.Chat, decision, shouldEscalate); err != nil {
+		errs = append(errs, fmt.Errorf("googlechat: %w", err))
+	}
 	return errors.Join(errs...)
 }
 
@@ -290,7 +301,7 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 		return nil
 	}
 
-	repo := gh.Repository(pi.Spec.Identity.Service)
+	repo := issueRepositoryForIncident(pi, gh)
 	if pi.Status.GitHub.Repository != "" {
 		repo = pi.Status.GitHub.Repository
 	}
@@ -377,8 +388,10 @@ func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am Esc
 	}
 
 	if err := am.Send(ctx, []alertmanager.Alert{alert}); err != nil {
+		appmetrics.RecordEscalationNotification("alertmanager", "error")
 		return err
 	}
+	appmetrics.RecordEscalationNotification("alertmanager", "success")
 
 	pi.Status.Alerting.EscalationSent = true
 	pi.Status.Alerting.LastSentTime = now
@@ -390,4 +403,79 @@ func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am Esc
 		ExecutedAt: now,
 	})
 	return nil
+}
+
+func syncGoogleChatEscalation(ctx context.Context, pi *sre.PredictiveIncident, gc GoogleChatClient, decision *rca.Decision, shouldEscalate bool) error {
+	if gc == nil || !gc.Enabled() || !shouldEscalate || pi.Status.Chat.EscalationSent {
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if err := gc.Send(ctx, buildGoogleChatEscalationMessage(pi, decision)); err != nil {
+		appmetrics.RecordEscalationNotification("google_chat", "error")
+		return err
+	}
+	appmetrics.RecordEscalationNotification("google_chat", "success")
+
+	pi.Status.Chat.EscalationSent = true
+	pi.Status.Chat.LastSentTime = now
+	pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
+		Name:       "send-google-chat-escalation",
+		Tool:       "google_chat_send_message",
+		Args:       map[string]any{"incident": pi.Name, "channel": "incidents-sre"},
+		Result:     map[string]any{"sent": true},
+		ExecutedAt: now,
+	})
+	return nil
+}
+
+func issueRepositoryForIncident(pi *sre.PredictiveIncident, gh GitHubIssueClient) string {
+	if repo := strings.TrimSpace(githubRepositoryLabel(pi)); repo != "" {
+		return repo
+	}
+	return gh.Repository(pi.Spec.Identity.Service)
+}
+
+func githubRepositoryLabel(pi *sre.PredictiveIncident) string {
+	if pi == nil || pi.Spec.Alert == nil {
+		return ""
+	}
+	labels, ok := pi.Spec.Alert["labels"].(map[string]any)
+	if ok {
+		if repo, ok := labels["github_repository"].(string); ok {
+			return strings.TrimSpace(repo)
+		}
+	}
+	typedLabels, ok := pi.Spec.Alert["labels"].(map[string]string)
+	if ok {
+		return strings.TrimSpace(typedLabels["github_repository"])
+	}
+	return ""
+}
+
+func buildGoogleChatEscalationMessage(pi *sre.PredictiveIncident, decision *rca.Decision) string {
+	reason := pi.Status.BlockedReason
+	if reason == "" {
+		reason = "automatic remediation failed"
+	}
+	if decision != nil {
+		if r, ok := decision.Escalation["reason"].(string); ok && r != "" {
+			reason = r
+		}
+	}
+	return strings.Join([]string{
+		"*Miudinho Agent escalated an incident to N2*",
+		"",
+		fmt.Sprintf("Alert: %s", defaultIfEmpty(pi.Spec.Title, pi.Name)),
+		fmt.Sprintf("Namespace: %s", defaultIfEmpty(pi.Spec.Identity.Namespace, "default")),
+		fmt.Sprintf("Service: %s", defaultIfEmpty(pi.Spec.Identity.Service, "unknown")),
+		fmt.Sprintf("Severity: %s", defaultIfEmpty(pi.Spec.Severity, "warning")),
+		fmt.Sprintf("Phase: %s", defaultIfEmpty(string(pi.Status.Phase), "unknown")),
+		fmt.Sprintf("Reason: %s", reason),
+		fmt.Sprintf("GitHub issue: %s", defaultIfEmpty(pi.Status.GitHub.URL, "not created")),
+	}, "\n")
+}
+
+func NewGoogleChatClient(cfg config.NotificationsConfig) GoogleChatClient {
+	return googlechat.New(cfg)
 }

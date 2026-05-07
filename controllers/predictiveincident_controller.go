@@ -115,11 +115,16 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		pi.Status.Phase = sre.PhaseBlocked
 		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "action_error")
 	}
-	if !acted && pi.Status.Phase == sre.PhaseNew {
-		pi.Status.Phase = sre.PhaseEnriched
+	if !acted && actionErr == nil && pi.Spec.Source == sre.SourceAlertmanager && pi.Status.Phase == sre.PhaseEnriched {
+		pi.Status.Phase = sre.PhaseBlocked
+		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_safe_action")
+		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "no policy matched or actions are disabled")
 	}
 
 	shouldEscalate := shouldEscalateIssue(pi, eval.Decision, pi.Status.Phase == sre.PhaseEscalated)
+	if pi.Status.Phase == sre.PhaseBlocked {
+		shouldEscalate = true
+	}
 	if err := r.Notifier.Sync(ctx, pi, eval.Decision, shouldEscalate); err != nil {
 		appendBlockedDetail(pi, "notification_error: "+err.Error())
 	}
@@ -158,10 +163,14 @@ func (r *PredictiveIncidentReconciler) ensureDefaults() {
 		r.Notifier = &DefaultIncidentNotifier{
 			GitHub: githubissues.New(r.Config.GitHub),
 			Alert:  nil,
+			Chat:   nil,
 		}
 	}
 	if notifier, ok := r.Notifier.(*DefaultIncidentNotifier); ok && notifier.Alert == nil {
 		notifier.Alert = alertmanager.NewClient(r.Config.Observability)
+	}
+	if notifier, ok := r.Notifier.(*DefaultIncidentNotifier); ok && notifier.Chat == nil {
+		notifier.Chat = NewGoogleChatClient(r.Config.Notifications)
 	}
 }
 

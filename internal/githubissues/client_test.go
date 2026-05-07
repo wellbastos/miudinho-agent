@@ -26,9 +26,10 @@ func TestSplitCSV(t *testing.T) {
 
 func TestRepositoryAndTeamMentions(t *testing.T) {
 	client := &Client{
-		owner:   "wellbastos",
-		product: " Meu_Produto ",
-		teams:   []string{"sq-sre_admin", " dev-platform "},
+		owner:      "wellbastos",
+		repoPrefix: "apps-",
+		product:    " Meu_Produto ",
+		teams:      []string{"sq-sre_admin", " dev-platform "},
 	}
 
 	if got := client.Repository("ignored"); got != "apps-meu-produto" {
@@ -38,6 +39,17 @@ func TestRepositoryAndTeamMentions(t *testing.T) {
 	wantMentions := []string{"@wellbastos/sq-sre-admin", "@wellbastos/dev-platform"}
 	if got := client.TeamMentions(); !reflect.DeepEqual(got, wantMentions) {
 		t.Fatalf("unexpected team mentions: got=%v want=%v", got, wantMentions)
+	}
+}
+
+func TestRepositoryUsesPrefixFromEnvConfig(t *testing.T) {
+	client := &Client{
+		repoPrefix: "incidents-",
+		product:    " checkout ",
+	}
+
+	if got := client.Repository("ignored"); got != "incidents-checkout" {
+		t.Fatalf("unexpected repository with custom prefix: %q", got)
 	}
 }
 

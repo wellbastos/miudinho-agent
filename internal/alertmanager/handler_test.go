@@ -10,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
+	"github.com/wellbastos/miudinho-agent/internal/incidents"
 	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -136,13 +137,13 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 }
 
 func TestIncidentNameForFingerprintHandlesShortAndEmptyValues(t *testing.T) {
-	if got := incidentNameForFingerprint("abc"); got != "pi-am-abc" {
+	if got := incidents.IncidentNameForFingerprint("abc"); got != "pi-am-abc" {
 		t.Fatalf("unexpected short fingerprint name: %q", got)
 	}
-	if got := incidentNameForFingerprint("abcdefghijklmnop"); got != "pi-am-abcdefghijkl" {
+	if got := incidents.IncidentNameForFingerprint("abcdefghijklmnop"); got != "pi-am-abcdefghijkl" {
 		t.Fatalf("unexpected trimmed fingerprint name: %q", got)
 	}
-	if got := incidentNameForFingerprint(""); got == "pi-am-" {
+	if got := incidents.IncidentNameForFingerprint(""); got == "pi-am-" {
 		t.Fatalf("expected generated name for empty fingerprint, got %q", got)
 	}
 }
@@ -240,5 +241,51 @@ func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
 	after := testutil.ToFloat64(appmetrics.ResolvedAlertsTotalForTest("alertmanager", "default", "checkout", "critical"))
 	if after != before+1 {
 		t.Fatalf("expected resolved alert metric increment, got before=%v after=%v", before, after)
+	}
+}
+
+func TestHandleFakeAlertCreatesSyntheticIncident(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := sre.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme returned error: %v", err)
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).Build()
+	handler := NewHandler(cl)
+
+	body := bytes.NewReader([]byte(`{"namespace":"o11y","service":"checkout","github_repository":"apps-checkout-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/test/fake-alert", body)
+	rec := httptest.NewRecorder()
+	handler.HandleFakeAlert(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["incident_name"] == "" {
+		t.Fatalf("expected incident_name in response, got %#v", resp)
+	}
+
+	list := &sre.PredictiveIncidentList{}
+	if err := cl.List(context.Background(), list, client.InNamespace("o11y")); err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("expected 1 incident, got %d", len(list.Items))
+	}
+	got := list.Items[0]
+	if got.Spec.Identity.Service != "checkout" {
+		t.Fatalf("expected checkout service, got %q", got.Spec.Identity.Service)
+	}
+	labels, ok := got.Spec.Alert["labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected alert labels map, got %#v", got.Spec.Alert["labels"])
+	}
+	if labels["github_repository"] != "apps-checkout-test" {
+		t.Fatalf("expected github_repository label, got %#v", labels["github_repository"])
 	}
 }

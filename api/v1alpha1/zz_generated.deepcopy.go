@@ -98,6 +98,16 @@ func (in *AlertmanagerStatus) DeepCopy() *AlertmanagerStatus {
 	return out
 }
 
+func (in *GoogleChatStatus) DeepCopyInto(out *GoogleChatStatus) { *out = *in }
+func (in *GoogleChatStatus) DeepCopy() *GoogleChatStatus {
+	if in == nil {
+		return nil
+	}
+	out := new(GoogleChatStatus)
+	*out = *in
+	return out
+}
+
 func (in *ActionStatus) DeepCopyInto(out *ActionStatus) {
 	*out = *in
 	out.Args = copyAnyMap(in.Args)
@@ -129,6 +139,7 @@ func (in *PredictiveIncidentStatus) DeepCopyInto(out *PredictiveIncidentStatus) 
 	}
 	in.GitHub.DeepCopyInto(&out.GitHub)
 	in.Alerting.DeepCopyInto(&out.Alerting)
+	in.Chat.DeepCopyInto(&out.Chat)
 }
 func (in *PredictiveIncidentStatus) DeepCopy() *PredictiveIncidentStatus {
 	if in == nil {
@@ -331,13 +342,16 @@ func (in *AutoRemediationPolicyList) DeepCopyObject() runtime.Object {
 	return nil
 }
 
-func (in *SLOServiceRef) DeepCopyInto(out *SLOServiceRef) { *out = *in }
+func (in *SLOServiceRef) DeepCopyInto(out *SLOServiceRef) {
+	*out = *in
+	out.MatchLabels = copyStringMap(in.MatchLabels)
+}
 func (in *SLOServiceRef) DeepCopy() *SLOServiceRef {
 	if in == nil {
 		return nil
 	}
 	out := new(SLOServiceRef)
-	*out = *in
+	in.DeepCopyInto(out)
 	return out
 }
 func (in *SLOObjective) DeepCopyInto(out *SLOObjective) { *out = *in }

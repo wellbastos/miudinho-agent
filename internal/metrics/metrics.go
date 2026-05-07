@@ -53,6 +53,54 @@ var (
 		},
 		[]string{"source", "namespace", "service", "severity"},
 	)
+
+	alertPollRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_alert_poll_requests_total",
+			Help: "Total de polls de alertas executados por fonte.",
+		},
+		[]string{"source", "result"},
+	)
+
+	alertPollRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "miudinho_agent_alert_poll_request_duration_seconds",
+			Help:    "Duracao dos polls de alertas por fonte.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"source", "result"},
+	)
+
+	alertsCollectedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_alerts_collected_total",
+			Help: "Total de alertas coletados por fonte.",
+		},
+		[]string{"source"},
+	)
+
+	alertsDeduplicatedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_alerts_deduplicated_total",
+			Help: "Total de alertas descartados por deduplicacao entre fontes.",
+		},
+	)
+
+	polledIncidentsSyncedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_polled_incidents_synced_total",
+			Help: "Total de incidentes sincronizados pelo poller por resultado.",
+		},
+		[]string{"result"},
+	)
+
+	escalationNotificationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_escalation_notifications_total",
+			Help: "Total de notificacoes de escalacao enviadas por destino.",
+		},
+		[]string{"target", "result"},
+	)
 )
 
 func init() {
@@ -67,6 +115,12 @@ func register() {
 			alertWebhookRequestsTotal,
 			alertWebhookRequestDuration,
 			resolvedAlertsTotal,
+			alertPollRequestsTotal,
+			alertPollRequestDuration,
+			alertsCollectedTotal,
+			alertsDeduplicatedTotal,
+			polledIncidentsSyncedTotal,
+			escalationNotificationsTotal,
 		)
 	})
 }
@@ -100,6 +154,32 @@ func RecordResolvedAlert(source, namespace, service, severity string) {
 		sanitize(service, "unknown"),
 		sanitize(severity, "unknown"),
 	).Inc()
+}
+
+func RecordAlertPoll(source, result string, duration time.Duration, collected int) {
+	register()
+	alertPollRequestsTotal.WithLabelValues(sanitize(source, "unknown"), sanitize(result, "success")).Inc()
+	alertPollRequestDuration.WithLabelValues(sanitize(source, "unknown"), sanitize(result, "success")).Observe(duration.Seconds())
+	if collected > 0 {
+		alertsCollectedTotal.WithLabelValues(sanitize(source, "unknown")).Add(float64(collected))
+	}
+}
+
+func RecordAlertDeduplicated(count int) {
+	register()
+	if count > 0 {
+		alertsDeduplicatedTotal.Add(float64(count))
+	}
+}
+
+func RecordPolledIncidentSync(result string) {
+	register()
+	polledIncidentsSyncedTotal.WithLabelValues(sanitize(result, "updated")).Inc()
+}
+
+func RecordEscalationNotification(target, result string) {
+	register()
+	escalationNotificationsTotal.WithLabelValues(sanitize(target, "unknown"), sanitize(result, "success")).Inc()
 }
 
 func ResolvedAlertsTotalForTest(source, namespace, service, severity string) prometheus.Counter {

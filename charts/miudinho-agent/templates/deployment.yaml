@@ -34,8 +34,14 @@ spec:
           env:
             - name: ALERT_WEBHOOK_ADDR
               value: {{ .Values.env.alertWebhookAddr | quote }}
+            - name: ALERT_POLL_INTERVAL
+              value: {{ .Values.env.alertPollInterval | quote }}
+            - name: ALERT_SOURCES_ENABLED
+              value: {{ .Values.env.alertSourcesEnabled | quote }}
             - name: ALERTMANAGER_OUTBOUND_URL
               value: {{ .Values.env.alertmanagerOutboundUrl | quote }}
+            - name: ALERTMANAGER_API_URL
+              value: {{ .Values.env.alertmanagerApiUrl | quote }}
             - name: PROM_URL
               value: {{ .Values.env.promUrl | quote }}
             - name: TEMPO_URL
@@ -62,8 +68,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "miudinho-agent.secretName" . }}
                   key: GITHUB_TOKEN
+            - name: GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL
             - name: GITHUB_OWNER
               value: {{ .Values.env.githubOwner | quote }}
+            - name: GITHUB_REPOSITORY_PREFIX
+              value: {{ .Values.env.githubRepositoryPrefix | quote }}
             - name: GITHUB_PRODUCT_NAME
               value: {{ .Values.env.githubProductName | quote }}
             - name: GITHUB_N2_TEAMS

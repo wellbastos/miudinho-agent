@@ -180,8 +180,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Normalize chart registry
-        run: echo "CHART_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - name: Normalize registry coordinates
+        run: |
+          echo "IMAGE_NAME=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "CHART_REGISTRY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Compute chart package version
+        run: |
+          BASE_VERSION="$(awk '/^version:/ {print $2}' "${CHART_PATH}/Chart.yaml")"
+          SAFE_REF="$(echo "${GITHUB_REF_NAME}" | tr '/_' '--')"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            CHART_VERSION="${GITHUB_REF_NAME#v}"
+            IMAGE_TAG="${GITHUB_REF_NAME}"
+          else
+            CHART_VERSION="${BASE_VERSION}-${SAFE_REF}.${GITHUB_RUN_NUMBER}"
+            IMAGE_TAG="${{ steps.meta.outputs.version }}"
+          fi
+
+          echo "CHART_VERSION=${CHART_VERSION}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
 
       - name: Setup Helm
         uses: azure/setup-helm@v4
@@ -197,7 +226,12 @@ jobs:
       - name: Package Helm chart
         run: |
           mkdir -p .cr-release-packages
-          helm package ${{ env.CHART_PATH }} --destination .cr-release-packages
+          cp -R "${CHART_PATH}" .chart-package
+          sed -i "s#^appVersion:.*#appVersion: \"${IMAGE_TAG}\"#" .chart-package/Chart.yaml
+          sed -i "s#^version:.*#version: ${CHART_VERSION}#" .chart-package/Chart.yaml
+          sed -i "s#^  repository:.*#  repository: ${IMAGE_NAME}#" .chart-package/values.yaml
+          sed -i "s#^  tag:.*#  tag: \"${IMAGE_TAG}\"#" .chart-package/values.yaml
+          helm package .chart-package --destination .cr-release-packages
 
       - name: Push Helm chart to GHCR
         run: |

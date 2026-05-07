@@ -21,6 +21,7 @@ type Server struct {
 func NewServer(cfg config.AppConfig, handler *Handler, engine *rca.Engine) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/alerts", handler.HandleAlerts)
+	mux.HandleFunc("/api/v1/test/fake-alert", handler.HandleFakeAlert)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := rca.WithTimeout()
 		defer cancel()

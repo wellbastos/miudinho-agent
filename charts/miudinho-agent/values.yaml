@@ -1,8 +1,8 @@
 replicaCount: 1
 
 image:
-  repository: SEU_REGISTRY/miudinho-agent
-  tag: "0.1"
+  repository: ghcr.io/wellbastos/miudinho-agent
+  tag: "latest"
   pullPolicy: IfNotPresent
 
 nameOverride: ""
@@ -26,15 +26,39 @@ service:
     probe: 8080
     metrics: 8081
 
+serviceMonitor:
+  enabled: false
+  namespace: ""
+  labels: {}
+  annotations: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  honorLabels: false
+
+podMonitor:
+  enabled: false
+  namespace: ""
+  labels: {}
+  annotations: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  honorLabels: false
+
 secret:
   create: true
   name: ""
   googleApiKey: "COLOQUE_AQUI"
   githubToken: "COLOQUE_AQUI"
+  googleChatIncidentsWebhookUrl: "COLOQUE_AQUI"
 
 env:
   alertWebhookAddr: ":8090"
+  alertPollInterval: "30s"
+  alertSourcesEnabled: "prometheus,alertmanager"
   alertmanagerOutboundUrl: "http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts"
+  alertmanagerApiUrl: "http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts"
   promUrl: "http://thanos-query.o11y.svc.cluster.local:10901"
   tempoUrl: "http://tempo.o11y.svc.cluster.local:3100"
   tempoPredictivePath: "api/search"
@@ -44,8 +68,9 @@ env:
   geminiBaseUrl: "https://generativelanguage.googleapis.com"
   geminiModel: "gemini-1.5-pro"
   githubOwner: "wellbastos"
+  githubRepositoryPrefix: "apps-"
   githubProductName: "miudinho-agent" # repo name
-  githubN2Teams: "sq-sre-admin,sq-sre-editor,sq-ser-viewer"
+  githubN2Teams: "sre-editor,sre-viewer,sre-admin"
   llmRoutingMode: "ollama_only"
   autoObserveOnly: "true"
   observeOnlyTtlSeconds: "300"

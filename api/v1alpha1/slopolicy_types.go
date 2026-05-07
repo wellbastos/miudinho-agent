@@ -3,9 +3,10 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 type SLOServiceRef struct {
-	Namespace string `json:"namespace,omitempty"`
-	Service   string `json:"service,omitempty"`
-	Job       string `json:"job,omitempty"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Service     string            `json:"service,omitempty"`
+	Job         string            `json:"job,omitempty"`
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
 type SLOObjective struct {

@@ -21,6 +21,7 @@ type Client struct {
 	httpClient *http.Client
 	token      string
 	owner      string
+	repoPrefix string
 	product    string
 	teams      []string
 }
@@ -37,10 +38,11 @@ func New(cfg config.GitHubConfig) *Client {
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		token:   cfg.Token,
-		owner:   cfg.Owner,
-		product: cfg.ProductName,
-		teams:   cfg.N2Teams,
+		token:      cfg.Token,
+		owner:      cfg.Owner,
+		repoPrefix: cfg.RepoPrefix,
+		product:    cfg.ProductName,
+		teams:      cfg.N2Teams,
 	}
 }
 
@@ -60,7 +62,7 @@ func (c *Client) Repository(defaultProduct string) string {
 	if product == "" {
 		product = "unknown"
 	}
-	return "apps-" + product
+	return sanitizeRepositoryPrefix(c.repoPrefix) + product
 }
 
 func (c *Client) TeamMentions() []string {
@@ -173,4 +175,15 @@ func splitCSV(in string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+func sanitizeRepositoryPrefix(in string) string {
+	prefix := strings.ToLower(strings.TrimSpace(in))
+	prefix = strings.ReplaceAll(prefix, "_", "-")
+	prefix = slugSanitizer.ReplaceAllString(prefix, "-")
+	prefix = strings.Trim(prefix, "-")
+	if prefix == "" {
+		return ""
+	}
+	return prefix + "-"
 }
