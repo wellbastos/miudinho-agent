@@ -5,8 +5,8 @@ image:
   tag: "latest"
   pullPolicy: IfNotPresent
 
-nameOverride: ""
-fullnameOverride: ""
+nameOverride: "miudinho-agent" 
+fullnameOverride: "miudinho-agent"
 
 serviceAccount:
   create: true
