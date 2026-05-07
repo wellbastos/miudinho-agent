@@ -113,7 +113,7 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			"miudinho.o11y.io/source":      "predictive",
 			"miudinho.o11y.io/fingerprint": fp,
 			"miudinho.o11y.io/policy":      slo.Name,
-			"app.kubernetes.io/name":  target.service,
+			"app.kubernetes.io/name":       target.service,
 		}
 		for key, value := range target.labels {
 			labels[key] = value

@@ -36,7 +36,7 @@ func TestSLOPolicyReconcileDiscoversServicesByLabels(t *testing.T) {
 			Namespace: "apps",
 			Labels: map[string]string{
 				"miudinho.o11y.io/enabled": "true",
-				"team":                "payments",
+				"team":                     "payments",
 			},
 		},
 	}
