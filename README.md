@@ -65,7 +65,7 @@ flowchart TD
     PIC --> AMOUT[Alertmanager Outbound]
 
     K8S -->|restart pod / rollout restart| ACT[Mitigation]
-    GH -->|comment for N2| N2[Teams sq-sre-admin sq-sre-editor sq-ser-viewer]
+    GH -->|comment for N2| N2[Teams sre-editor sre-viewer sre-admin]
 ```
 
 ## Requisitos
@@ -212,8 +212,10 @@ Exemplos de consumo publicados pelo pipeline:
 
 ```bash
 docker pull ghcr.io/<owner>/miudinho-agent:latest
-helm pull oci://ghcr.io/<owner>/helm/miudinho-agent --version 0.1.0
+helm pull oci://ghcr.io/<owner>/helm/miudinho-agent --version <chart-version>
 ```
+
+Para releases por tag `v*`, o chart é publicado com a versão sem o prefixo `v`. Para builds de branch, o pipeline gera uma versão derivada da branch e do número da execução.
 
 ## Deploy com Helm
 
@@ -223,19 +225,19 @@ Instalação básica:
 helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --namespace o11y \
   --create-namespace \
-  --set image.repository=seu-registry/miudinho-agent \
-  --set image.tag=0.1.0 \
+  --set image.repository=ghcr.io/wellbastos/miudinho-agent \
+  --set image.tag=latest \
   --set secret.googleApiKey="$GOOGLE_API_KEY"
 ```
 
-Instalação com integrações de GitHub e Alertmanager outbound:
+Instalação com integrações reativas:
 
 ```bash
 helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --namespace o11y \
   --create-namespace \
-  --set image.repository=seu-registry/miudinho-agent \
-  --set image.tag=0.1.0 \
+  --set image.repository=ghcr.io/wellbastos/miudinho-agent \
+  --set image.tag=latest \
   --set secret.googleApiKey="$GOOGLE_API_KEY" \
   --set secret.githubToken="$GITHUB_TOKEN" \
   --set secret.googleChatIncidentsWebhookUrl="$GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL" \
@@ -245,8 +247,6 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --set env.alertmanagerOutboundUrl=http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts \
   --set env.alertmanagerApiUrl=http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts
 ```
-
-### Deploy mínimo para SLO global
 
 Para o modo preditivo sem criar um `SLOPolicy` por app, rotule os `Service`s monitorados e aplique uma policy global.
 
@@ -329,47 +329,27 @@ Convenções atuais do reconciler:
 - labels do `Service` são propagadas para o `PredictiveIncident`
 - as queries esperam métricas `http_requests_total` com labels `namespace`, `service`, `job` e `status`
 
-### Variáveis de observabilidade
+### Variáveis principais
 
-- `PROM_URL`
-- `ALERTMANAGER_API_URL`
-- `TEMPO_URL`
-- `TEMPO_PREDICTIVE_PATH`
-- `TEMPO_PREDICTIVE_QUERY_PARAM`
-- `ALERTMANAGER_OUTBOUND_URL`
+Os parâmetros mais importantes podem ser configurados por env no chart:
 
-### Variáveis de LLM
+- observabilidade: `PROM_URL`, `ALERTMANAGER_API_URL`, `ALERTMANAGER_OUTBOUND_URL`, `TEMPO_URL`
+- LLM: `LLM_ROUTING_MODE`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `GEMINI_BASE_URL`, `GEMINI_MODEL`, `SYSTEM_PROMPT`, `APPROVER_PROMPT`
+- GitHub: `GITHUB_OWNER`, `GITHUB_REPOSITORY_PREFIX`, `GITHUB_PRODUCT_NAME`, `GITHUB_N2_TEAMS`
+- notificações: `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
+- execução: `ALERT_WEBHOOK_ADDR`, `ALERT_POLL_INTERVAL`, `ALERT_SOURCES_ENABLED`, `EXECUTE_ACTIONS`, `AUTO_OBSERVE_ONLY`, `OBSERVE_ONLY_TTL_SECONDS`, `LEADER_ELECTION`
 
-- `LLM_ROUTING_MODE`
-- `OLLAMA_BASE_URL`
-- `OLLAMA_MODEL`
-- `GEMINI_BASE_URL`
-- `GEMINI_MODEL`
-- `GOOGLE_API_KEY`
+Com `GITHUB_REPOSITORY_PREFIX=apps` e `GITHUB_PRODUCT_NAME=foo`, o operador interage com o repositório `apps-foo`. Se você usar `env.githubRepositoryPrefix=incidents` e `env.githubProductName=checkout`, o fallback vira `incidents-checkout`.
 
-### Variáveis de GitHub
+Os prompts padrão são definidos em `values.yaml` e enviados por `SYSTEM_PROMPT` e `APPROVER_PROMPT`. Para sobrescrever:
 
-- `GITHUB_TOKEN`
-- `GITHUB_OWNER`
-- `GITHUB_REPOSITORY_PREFIX`
-- `GITHUB_PRODUCT_NAME`
-- `GITHUB_N2_TEAMS`
-
-Com `GITHUB_REPOSITORY_PREFIX=apps` e `GITHUB_PRODUCT_NAME=foo`, o operador interage com o repositório `apps-foo`.
-
-### Variáveis de notificação
-
-- `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
-
-### Variáveis de execução
-
-- `ALERT_WEBHOOK_ADDR`
-- `ALERT_POLL_INTERVAL`
-- `ALERT_SOURCES_ENABLED`
-- `EXECUTE_ACTIONS`
-- `AUTO_OBSERVE_ONLY`
-- `OBSERVE_ONLY_TTL_SECONDS`
-- `LEADER_ELECTION`
+```bash
+helm upgrade --install miudinho-agent ./charts/miudinho-agent \
+  --namespace o11y \
+  --create-namespace \
+  --set-string env.systemPrompt='Você é um Agente SRE. Responda sempre em JSON válido e priorize ações reversíveis.' \
+  --set-string env.approverPrompt='Você é o Change Approver. Aprove somente ações de baixo risco e responda em JSON.'
+```
 
 ## Métricas e Alloy
 
@@ -473,10 +453,6 @@ Campos mais usados:
 - `secret.googleApiKey`
 - `secret.githubToken`
 - `secret.googleChatIncidentsWebhookUrl`
-- `serviceAccount.create`
-- `serviceAccount.name`
-- `rbac.create`
-- `leaderElection.enabled`
 - `env.alertWebhookAddr`
 - `env.alertPollInterval`
 - `env.alertSourcesEnabled`
@@ -488,6 +464,8 @@ Campos mais usados:
 - `env.ollamaModel`
 - `env.geminiBaseUrl`
 - `env.geminiModel`
+- `env.systemPrompt`
+- `env.approverPrompt`
 - `env.githubOwner`
 - `env.githubRepositoryPrefix`
 - `env.githubProductName`
@@ -497,14 +475,16 @@ Campos mais usados:
 - `env.observeOnlyTtlSeconds`
 - `env.executeActions`
 
+Os demais campos do chart seguem o padrão de `values.yaml` e normalmente só precisam ser alterados quando você estiver integrando com um stack específico de observabilidade, autenticação ou política de deploy.
+
 Se você já possui um `Secret` existente:
 
 ```bash
 helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --namespace o11y \
   --create-namespace \
-  --set image.repository=seu-registry/miudinho-agent \
-  --set image.tag=0.1.0 \
+  --set image.repository=ghcr.io/wellbastos/miudinho-agent \
+  --set image.tag=latest \
   --set secret.create=false \
   --set secret.name=miudinho-agent-secrets
 ```

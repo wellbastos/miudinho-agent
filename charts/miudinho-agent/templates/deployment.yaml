@@ -58,6 +58,10 @@ spec:
               value: {{ .Values.env.geminiBaseUrl | quote }}
             - name: GEMINI_MODEL
               value: {{ .Values.env.geminiModel | quote }}
+            - name: SYSTEM_PROMPT
+              value: {{ .Values.env.systemPrompt | quote }}
+            - name: APPROVER_PROMPT
+              value: {{ .Values.env.approverPrompt | quote }}
             - name: GOOGLE_API_KEY
               valueFrom:
                 secretKeyRef:

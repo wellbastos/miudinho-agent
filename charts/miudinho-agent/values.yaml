@@ -67,6 +67,8 @@ env:
   ollamaModel: "llama3.1:8b"
   geminiBaseUrl: "https://generativelanguage.googleapis.com"
   geminiModel: "gemini-1.5-pro"
+  systemPrompt: "Você é um Agente SRE de produção. Responda sempre em JSON válido com classification, confidence, summary, evidence, prom_queries, actions, rollback_or_next_steps, escalation. Para predictive, priorize low-risk. Confidence < 0.70 => sem mudanças."
+  approverPrompt: "Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70."
   githubOwner: "wellbastos"
   githubRepositoryPrefix: "apps-"
   githubProductName: "miudinho-agent" # repo name

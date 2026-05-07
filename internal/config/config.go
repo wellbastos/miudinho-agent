@@ -86,8 +86,8 @@ func LoadFromEnv() AppConfig {
 			GeminiBaseURL:  getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com"),
 			GeminiModel:    getenv("GEMINI_MODEL", "gemini-1.5-pro"),
 			GoogleAPIKey:   strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")),
-			SystemPrompt:   getenv("SYSTEM_PROMPT", `Você é um Agente SRE de produção. Responda sempre em JSON válido com classification, confidence, summary, evidence, prom_queries, actions, rollback_or_next_steps, escalation. Para predictive, priorize low-risk. Confidence < 0.70 => sem mudanças.`),
-			ApproverPrompt: getenv("APPROVER_PROMPT", `Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70.`),
+			SystemPrompt:   getenv("SYSTEM_PROMPT", defaultSystemPrompt()),
+			ApproverPrompt: getenv("APPROVER_PROMPT", defaultApproverPrompt()),
 		},
 		GitHub: GitHubConfig{
 			APIURL:      getenv("GITHUB_API_URL", "https://api.github.com"),
@@ -147,4 +147,12 @@ func splitCSV(raw string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func defaultSystemPrompt() string {
+	return `Você é um Agente SRE de produção. Responda sempre em JSON válido com classification, confidence, summary, evidence, prom_queries, actions, rollback_or_next_steps, escalation. Para predictive, priorize low-risk. Confidence < 0.70 => sem mudanças.`
+}
+
+func defaultApproverPrompt() string {
+	return `Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70.`
 }
