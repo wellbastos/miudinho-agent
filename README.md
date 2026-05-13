@@ -292,12 +292,14 @@ make uninstall NAMESPACE=o11y
 
 ### SLOPolicy global
 
+`SLOPolicy` e `AutoRemediationPolicy` são recursos globais do cluster. O `PredictiveIncident` continua namespaced, criado no namespace do workload afetado.
+
 O campo `spec.service` aceita dois modos:
 
 - específico: define `namespace`, `service` e opcionalmente `job`
-- global: define `namespace` e `matchLabels` para descobrir vários `Service`s automaticamente
+- global: define `matchLabels` para descobrir vários `Service`s automaticamente em todos os namespaces permitidos
 
-Quando `service` não é informado, o reconciler lista `Service`s compatíveis com `matchLabels` e cria ou atualiza um `PredictiveIncident` por alvo encontrado.
+Quando `service.namespace` não é informado, o reconciler lista `Service`s compatíveis com `matchLabels` em todos os namespaces, exceto os declarados em `spec.excludedNamespaces`, e cria ou atualiza um `PredictiveIncident` por alvo encontrado.
 
 Exemplo:
 
@@ -306,10 +308,13 @@ apiVersion: miudinho.o11y.io/v1alpha1
 kind: SLOPolicy
 metadata:
   name: global-slo
-  namespace: o11y
 spec:
+  excludedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - o11y
   service:
-    namespace: apps
     matchLabels:
       miudinho.o11y.io/enabled: "true"
   objective:
@@ -515,7 +520,7 @@ Ou via `Makefile`:
 make apply-samples
 ```
 
-O sample de `SLOPolicy` usa o modo global e espera `Service`s com a label `miudinho.o11y.io/enabled: "true"` no namespace alvo.
+O sample de `SLOPolicy` usa o modo global e espera `Service`s com a label `miudinho.o11y.io/enabled: "true"` nos namespaces não excluídos.
 
 ## Endpoints e health checks
 

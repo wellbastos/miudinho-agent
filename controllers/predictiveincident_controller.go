@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type PredictiveIncidentReconciler struct {
@@ -43,6 +44,8 @@ func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startedAt := time.Now()
+	logger := log.FromContext(ctx).WithValues("predictiveIncident", req.NamespacedName.String())
+	ctx = log.IntoContext(ctx, logger)
 	source := "unknown"
 	phase := "unknown"
 	result := "success"
@@ -65,6 +68,7 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	source = string(pi.Spec.Source)
+	logger.Info("reconciling predictive incident", "source", source, "phase", pi.Status.Phase, "severity", pi.Spec.Severity)
 
 	if pi.Status.Phase == "" {
 		pi.Status.Phase = sre.PhaseNew
@@ -82,18 +86,39 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		phase = string(pi.Status.Phase)
 		result = "error"
+		logger.Error(err, "failed to resolve auto-remediation policy")
 		return ctrl.Result{}, err
+	}
+	if policy == nil {
+		logger.Info("no auto-remediation policy matched incident")
+	} else {
+		logger.Info("auto-remediation policy matched incident", "policy", client.ObjectKeyFromObject(policy).String())
 	}
 
 	eval, evalErr := r.DecisionSvc.Evaluate(ctx, pi, policy)
 	if evalErr != nil {
 		appendBlockedDetail(pi, "decision_error: "+evalErr.Error())
+		logger.Error(evalErr, "incident decision evaluation failed")
 	}
 	if evidenceErr != nil {
 		appendBlockedDetail(pi, "evidence_error: "+evidenceErr.Error())
+		logger.Error(evidenceErr, "incident evidence collection failed")
 	}
 
 	if eval.Decision != nil {
+		approvalApproved := false
+		approvalRisk := ""
+		if eval.Approval != nil {
+			approvalApproved = eval.Approval.Approved
+			approvalRisk = eval.Approval.RiskLevel
+		}
+		logger.Info("incident decision evaluated",
+			"classification", eval.Decision.Classification,
+			"confidence", eval.Decision.Confidence,
+			"observeOnly", eval.ObserveOnly,
+			"approvalApproved", approvalApproved,
+			"approvalRisk", approvalRisk,
+		)
 		pi.Status.RCA = sre.RCAStatus{
 			Classification: eval.Decision.Classification,
 			Confidence:     eval.Decision.Confidence,
@@ -114,11 +139,13 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		appendBlockedDetail(pi, "action_error: "+actionErr.Error())
 		pi.Status.Phase = sre.PhaseBlocked
 		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "action_error")
+		logger.Error(actionErr, "incident action execution failed")
 	}
 	if !acted && actionErr == nil && pi.Spec.Source == sre.SourceAlertmanager && pi.Status.Phase == sre.PhaseEnriched {
 		pi.Status.Phase = sre.PhaseBlocked
 		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_safe_action")
 		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "no policy matched or actions are disabled")
+		logger.Info("incident blocked because no safe action was available", "reason", pi.Status.BlockedReason)
 	}
 
 	shouldEscalate := shouldEscalateIssue(pi, eval.Decision, pi.Status.Phase == sre.PhaseEscalated)
@@ -127,6 +154,7 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	if err := r.Notifier.Sync(ctx, pi, eval.Decision, shouldEscalate); err != nil {
 		appendBlockedDetail(pi, "notification_error: "+err.Error())
+		logger.Error(err, "incident notification sync failed", "shouldEscalate", shouldEscalate)
 	}
 
 	pi.Status.ObservedGeneration = pi.Generation
@@ -134,9 +162,11 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.Status().Update(ctx, pi); err != nil {
 		phase = string(pi.Status.Phase)
 		result = "error"
+		logger.Error(err, "failed to update predictive incident status", "phase", pi.Status.Phase)
 		return ctrl.Result{}, err
 	}
 	phase = string(pi.Status.Phase)
+	logger.Info("predictive incident reconciled", "phase", phase, "actions", len(pi.Status.Actions), "blockedReason", pi.Status.BlockedReason)
 
 	r.recordPhaseEvent(pi, previousPhase, previousActionCount, previousBlockedDetails)
 

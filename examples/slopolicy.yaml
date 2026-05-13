@@ -1,11 +1,14 @@
 apiVersion: miudinho.o11y.io/v1alpha1
 kind: SLOPolicy
 metadata:
-  name: svc-a-slo
-  namespace: o11y
+  name: global-slo
 spec:
+  excludedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - o11y
   service:
-    namespace: o11y
     matchLabels:
       miudinho.o11y.io/enabled: "true"
   objective:

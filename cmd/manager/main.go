@@ -43,6 +43,7 @@ func main() {
 	ctrl.SetLogger(zap.New(
 		zap.UseFlagOptions(&opts),
 		zap.JSONEncoder(),
+		zap.WriteTo(os.Stdout),
 	))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{

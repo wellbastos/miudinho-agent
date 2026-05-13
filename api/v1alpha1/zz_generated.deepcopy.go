@@ -200,6 +200,9 @@ func (in *PredictiveIncidentList) DeepCopyObject() runtime.Object {
 
 func (in *PolicySelector) DeepCopyInto(out *PolicySelector) {
 	*out = *in
+	if in.ExcludedNamespaces != nil {
+		out.ExcludedNamespaces = append([]string(nil), in.ExcludedNamespaces...)
+	}
 	out.MatchLabels = copyStringMap(in.MatchLabels)
 	if in.Severities != nil {
 		out.Severities = append([]string(nil), in.Severities...)
@@ -375,6 +378,9 @@ func (in *SLOSignals) DeepCopy() *SLOSignals {
 func (in *SLOPolicySpec) DeepCopyInto(out *SLOPolicySpec) {
 	*out = *in
 	in.Service.DeepCopyInto(&out.Service)
+	if in.ExcludedNamespaces != nil {
+		out.ExcludedNamespaces = append([]string(nil), in.ExcludedNamespaces...)
+	}
 	in.Objective.DeepCopyInto(&out.Objective)
 	in.Signals.DeepCopyInto(&out.Signals)
 }

@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type IncidentEvaluation struct {
@@ -120,11 +121,14 @@ type DefaultIncidentPolicyResolver struct {
 
 func (r *DefaultIncidentPolicyResolver) Resolve(ctx context.Context, pi *sre.PredictiveIncident) (*sre.AutoRemediationPolicy, error) {
 	var pols sre.AutoRemediationPolicyList
-	if err := r.Client.List(ctx, &pols, client.InNamespace(pi.Spec.Identity.Namespace)); err != nil {
+	if err := r.Client.List(ctx, &pols); err != nil {
 		return nil, err
 	}
 	for i := range pols.Items {
 		p := &pols.Items[i]
+		if namespaceExcluded(pi.Spec.Identity.Namespace, p.Spec.Selector.ExcludedNamespaces) {
+			continue
+		}
 		if p.Spec.Selector.Namespace != "" && p.Spec.Selector.Namespace != pi.Spec.Identity.Namespace {
 			continue
 		}
@@ -212,7 +216,22 @@ type DefaultIncidentActionExecutor struct {
 }
 
 func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.PredictiveIncident, policy *sre.AutoRemediationPolicy, eval IncidentEvaluation) (bool, error) {
-	if policy == nil || !e.Config.Execution.ExecuteActions || eval.ObserveOnly || eval.Approval == nil || !eval.Approval.Approved {
+	logger := log.FromContext(ctx).WithValues("component", "incident-action-executor")
+	switch {
+	case policy == nil:
+		logger.Info("skipping incident actions", "reason", "no_policy")
+		return false, nil
+	case !e.Config.Execution.ExecuteActions:
+		logger.Info("skipping incident actions", "reason", "execute_actions_disabled")
+		return false, nil
+	case eval.ObserveOnly:
+		logger.Info("skipping incident actions", "reason", "observe_only", "observeOnlyReason", eval.ObserveReason)
+		return false, nil
+	case eval.Approval == nil:
+		logger.Info("skipping incident actions", "reason", "approval_missing")
+		return false, nil
+	case !eval.Approval.Approved:
+		logger.Info("skipping incident actions", "reason", "approval_denied", "riskLevel", eval.Approval.RiskLevel, "approvalReasons", eval.Approval.Reasons)
 		return false, nil
 	}
 
@@ -224,10 +243,12 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 			continue
 		}
 		for _, act := range rule.Actions {
+			logger.Info("incident action selected", "action", act.Type, "policy", client.ObjectKeyFromObject(policy).String(), "incident", pi.Name)
 			switch act.Type {
 			case "observeOnly":
 				pi.Status.Phase = sre.PhaseBlocked
 				pi.Status.BlockedReason = "policy_observe_only"
+				logger.Info("incident action completed", "action", act.Type, "resultPhase", pi.Status.Phase)
 				return true, nil
 			case "escalate":
 				pi.Status.Phase = sre.PhaseEscalated
@@ -238,41 +259,54 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 					Result:     map[string]any{"phase": string(sre.PhaseEscalated)},
 					ExecutedAt: time.Now().Format(time.RFC3339),
 				})
+				logger.Info("incident action completed", "action", act.Type, "tool", "policy_escalate", "resultPhase", pi.Status.Phase)
 				return true, nil
 			case "restartPod":
 				if pi.Spec.Identity.Pod == "" {
+					logger.Info("skipping incident action", "action", act.Type, "reason", "pod_missing")
 					continue
 				}
 				pod := &corev1.Pod{}
 				pod.Name = pi.Spec.Identity.Pod
 				pod.Namespace = pi.Spec.Identity.Namespace
+				logger.Info("executing incident action", "action", act.Type, "tool", "k8s_delete_pod", "namespace", pod.Namespace, "pod", pod.Name)
 				if err := e.Client.Delete(ctx, pod); err != nil {
+					logger.Error(err, "incident action failed", "action", act.Type, "tool", "k8s_delete_pod", "namespace", pod.Namespace, "pod", pod.Name)
 					return false, err
 				}
 				pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{Name: "restart-pod", Tool: "k8s_delete_pod", Args: map[string]any{"namespace": pi.Spec.Identity.Namespace, "pod": pi.Spec.Identity.Pod}, Result: map[string]any{"ok": true}, ExecutedAt: time.Now().Format(time.RFC3339)})
 				pi.Status.Phase = sre.PhaseMitigated
+				logger.Info("incident action completed", "action", act.Type, "tool", "k8s_delete_pod", "namespace", pod.Namespace, "pod", pod.Name, "resultPhase", pi.Status.Phase)
 				return true, nil
 			case "rolloutRestartDeployment":
 				if pi.Spec.Identity.Deployment == "" {
+					logger.Info("skipping incident action", "action", act.Type, "reason", "deployment_missing")
 					continue
 				}
 				dep := &appsv1.Deployment{}
 				if err := e.Client.Get(ctx, client.ObjectKey{Namespace: pi.Spec.Identity.Namespace, Name: pi.Spec.Identity.Deployment}, dep); err != nil {
+					logger.Error(err, "incident action failed", "action", act.Type, "tool", "k8s_get_deployment", "namespace", pi.Spec.Identity.Namespace, "deployment", pi.Spec.Identity.Deployment)
 					return false, err
 				}
 				if dep.Spec.Template.Annotations == nil {
 					dep.Spec.Template.Annotations = map[string]string{}
 				}
 				dep.Spec.Template.Annotations["miudinho-agent/restartedAt"] = fmt.Sprintf("%d", time.Now().Unix())
+				logger.Info("executing incident action", "action", act.Type, "tool", "k8s_patch_deployment", "namespace", dep.Namespace, "deployment", dep.Name)
 				if err := e.Client.Update(ctx, dep); err != nil {
+					logger.Error(err, "incident action failed", "action", act.Type, "tool", "k8s_patch_deployment", "namespace", dep.Namespace, "deployment", dep.Name)
 					return false, err
 				}
 				pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{Name: "rollout-restart", Tool: "k8s_patch_deployment", Args: map[string]any{"namespace": pi.Spec.Identity.Namespace, "deployment": pi.Spec.Identity.Deployment}, Result: map[string]any{"ok": true}, ExecutedAt: time.Now().Format(time.RFC3339)})
 				pi.Status.Phase = sre.PhaseMitigated
+				logger.Info("incident action completed", "action", act.Type, "tool", "k8s_patch_deployment", "namespace", dep.Namespace, "deployment", dep.Name, "resultPhase", pi.Status.Phase)
 				return true, nil
+			default:
+				logger.Info("skipping incident action", "action", act.Type, "reason", "unknown_action_type")
 			}
 		}
 	}
+	logger.Info("no incident action matched policy rules")
 	return false, nil
 }
 
@@ -283,21 +317,28 @@ type DefaultIncidentNotifier struct {
 }
 
 func (n *DefaultIncidentNotifier) Sync(ctx context.Context, pi *sre.PredictiveIncident, decision *rca.Decision, shouldEscalate bool) error {
+	logger := log.FromContext(ctx).WithValues("component", "incident-notifier", "shouldEscalate", shouldEscalate)
+	logger.Info("syncing incident notifications")
 	var errs []error
 	if err := syncGitHubIssue(ctx, pi, n.GitHub, decision, shouldEscalate); err != nil {
+		logger.Error(err, "github notification sync failed")
 		errs = append(errs, fmt.Errorf("github: %w", err))
 	}
 	if err := syncEscalationAlert(ctx, pi, n.Alert, decision, shouldEscalate); err != nil {
+		logger.Error(err, "alertmanager escalation notification failed")
 		errs = append(errs, fmt.Errorf("alertmanager: %w", err))
 	}
 	if err := syncGoogleChatEscalation(ctx, pi, n.Chat, decision, shouldEscalate); err != nil {
+		logger.Error(err, "google chat escalation notification failed")
 		errs = append(errs, fmt.Errorf("googlechat: %w", err))
 	}
 	return errors.Join(errs...)
 }
 
 func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubIssueClient, decision *rca.Decision, shouldEscalate bool) error {
+	logger := log.FromContext(ctx).WithValues("component", "github-issue-sync")
 	if gh == nil || !gh.Enabled() {
+		logger.V(1).Info("skipping github issue sync", "reason", "disabled")
 		return nil
 	}
 
@@ -306,8 +347,10 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 		repo = pi.Status.GitHub.Repository
 	}
 	if pi.Status.GitHub.Number == 0 {
+		logger.Info("executing incident action", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
 		issue, err := gh.CreateIssue(ctx, repo, buildIssueTitle(pi), buildIssueBody(pi, decision), buildIssueLabels(pi))
 		if err != nil {
+			logger.Error(err, "incident action failed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
 			return err
 		}
 		pi.Status.GitHub.Repository = repo
@@ -322,10 +365,13 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 			Result:     map[string]any{"number": issue.Number, "url": issue.HTMLURL},
 			ExecutedAt: time.Now().Format(time.RFC3339),
 		})
+		logger.Info("incident action completed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo, "issueNumber", issue.Number, "url", issue.HTMLURL)
 	}
 
 	if shouldEscalate && !pi.Status.GitHub.Escalated && pi.Status.GitHub.Number > 0 {
+		logger.Info("executing incident action", "action", "escalate-github-issue", "tool", "github_issue_comment", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 		if err := gh.AddComment(ctx, repo, pi.Status.GitHub.Number, buildEscalationComment(gh, pi, decision)); err != nil {
+			logger.Error(err, "incident action failed", "action", "escalate-github-issue", "tool", "github_issue_comment", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 			return err
 		}
 		pi.Status.GitHub.Escalated = true
@@ -338,10 +384,13 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 			Result:     map[string]any{"teams": gh.TeamSlugs()},
 			ExecutedAt: time.Now().Format(time.RFC3339),
 		})
+		logger.Info("incident action completed", "action", "escalate-github-issue", "tool", "github_issue_comment", "repository", repo, "issueNumber", pi.Status.GitHub.Number, "teams", gh.TeamSlugs())
 	}
 
 	if shouldCloseIssue(pi) && pi.Status.GitHub.Number > 0 && pi.Status.GitHub.State != "closed" {
+		logger.Info("executing incident action", "action", "close-github-issue", "tool", "github_close_issue", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 		if err := gh.CloseIssue(ctx, repo, pi.Status.GitHub.Number); err != nil {
+			logger.Error(err, "incident action failed", "action", "close-github-issue", "tool", "github_close_issue", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 			return err
 		}
 		pi.Status.GitHub.State = "closed"
@@ -354,6 +403,7 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 			Result:     map[string]any{"state": "closed"},
 			ExecutedAt: time.Now().Format(time.RFC3339),
 		})
+		logger.Info("incident action completed", "action", "close-github-issue", "tool", "github_close_issue", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 	}
 
 	return nil
@@ -361,6 +411,7 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 
 func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am EscalationAlertClient, decision *rca.Decision, shouldEscalate bool) error {
 	if am == nil || !am.Enabled() || !shouldEscalate || pi.Status.Alerting.EscalationSent {
+		log.FromContext(ctx).V(1).Info("skipping alertmanager escalation sync", "enabled", am != nil && am.Enabled(), "shouldEscalate", shouldEscalate, "alreadySent", pi.Status.Alerting.EscalationSent)
 		return nil
 	}
 
@@ -387,8 +438,10 @@ func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am Esc
 		GeneratorURL: pi.Status.GitHub.URL,
 	}
 
+	log.FromContext(ctx).Info("executing incident action", "action", "send-alertmanager-escalation", "tool", "alertmanager_send_alert", "target", "n2")
 	if err := am.Send(ctx, []alertmanager.Alert{alert}); err != nil {
 		appmetrics.RecordEscalationNotification("alertmanager", "error")
+		log.FromContext(ctx).Error(err, "incident action failed", "action", "send-alertmanager-escalation", "tool", "alertmanager_send_alert", "target", "n2")
 		return err
 	}
 	appmetrics.RecordEscalationNotification("alertmanager", "success")
@@ -402,17 +455,21 @@ func syncEscalationAlert(ctx context.Context, pi *sre.PredictiveIncident, am Esc
 		Result:     map[string]any{"sent": true},
 		ExecutedAt: now,
 	})
+	log.FromContext(ctx).Info("incident action completed", "action", "send-alertmanager-escalation", "tool", "alertmanager_send_alert", "target", "n2")
 	return nil
 }
 
 func syncGoogleChatEscalation(ctx context.Context, pi *sre.PredictiveIncident, gc GoogleChatClient, decision *rca.Decision, shouldEscalate bool) error {
 	if gc == nil || !gc.Enabled() || !shouldEscalate || pi.Status.Chat.EscalationSent {
+		log.FromContext(ctx).V(1).Info("skipping google chat escalation sync", "enabled", gc != nil && gc.Enabled(), "shouldEscalate", shouldEscalate, "alreadySent", pi.Status.Chat.EscalationSent)
 		return nil
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	log.FromContext(ctx).Info("executing incident action", "action", "send-google-chat-escalation", "tool", "google_chat_send_message", "channel", "incidents-sre")
 	if err := gc.Send(ctx, buildGoogleChatEscalationMessage(pi, decision)); err != nil {
 		appmetrics.RecordEscalationNotification("google_chat", "error")
+		log.FromContext(ctx).Error(err, "incident action failed", "action", "send-google-chat-escalation", "tool", "google_chat_send_message", "channel", "incidents-sre")
 		return err
 	}
 	appmetrics.RecordEscalationNotification("google_chat", "success")
@@ -426,6 +483,7 @@ func syncGoogleChatEscalation(ctx context.Context, pi *sre.PredictiveIncident, g
 		Result:     map[string]any{"sent": true},
 		ExecutedAt: now,
 	})
+	log.FromContext(ctx).Info("incident action completed", "action", "send-google-chat-escalation", "tool", "google_chat_send_message", "channel", "incidents-sre")
 	return nil
 }
 

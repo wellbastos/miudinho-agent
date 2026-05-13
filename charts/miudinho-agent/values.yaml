@@ -5,6 +5,9 @@ image:
   tag: "latest"
   pullPolicy: IfNotPresent
 
+log:
+  level: "info"
+
 nameOverride: "miudinho-agent" 
 fullnameOverride: "miudinho-agent"
 

@@ -31,10 +31,11 @@ type SLOSignals struct {
 }
 
 type SLOPolicySpec struct {
-	Service         SLOServiceRef `json:"service"`
-	Objective       SLOObjective  `json:"objective"`
-	Signals         SLOSignals    `json:"signals"`
-	ScheduleSeconds int           `json:"scheduleSeconds,omitempty"`
+	Service            SLOServiceRef `json:"service"`
+	ExcludedNamespaces []string      `json:"excludedNamespaces,omitempty"`
+	Objective          SLOObjective  `json:"objective"`
+	Signals            SLOSignals    `json:"signals"`
+	ScheduleSeconds    int           `json:"scheduleSeconds,omitempty"`
 }
 
 type SLOPolicyStatus struct {
@@ -44,6 +45,7 @@ type SLOPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 type SLOPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -2,10 +2,13 @@ apiVersion: miudinho.o11y.io/v1alpha1
 kind: AutoRemediationPolicy
 metadata:
   name: default-observe
-  namespace: o11y
 spec:
   selector:
-    namespace: o11y
+    excludedNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+      - o11y
     severities: ["critical","high","warning"]
   guardrails:
     minAvailableReplicas: 2

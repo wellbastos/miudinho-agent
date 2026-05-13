@@ -183,6 +183,9 @@ func (r *SLOPolicyReconciler) discoverTargets(ctx context.Context, slo *sre.SLOP
 	}
 
 	if explicitService != "" {
+		if namespaceExcluded(targetNamespace, slo.Spec.ExcludedNamespaces) {
+			return nil, nil
+		}
 		return []sloTarget{{
 			namespace: targetNamespace,
 			service:   explicitService,
@@ -208,6 +211,9 @@ func (r *SLOPolicyReconciler) discoverTargets(ctx context.Context, slo *sre.SLOP
 		if svc.Name == "kubernetes" {
 			continue
 		}
+		if namespaceExcluded(svc.Namespace, slo.Spec.ExcludedNamespaces) {
+			continue
+		}
 		targets = append(targets, sloTarget{
 			namespace: svc.Namespace,
 			service:   svc.Name,
@@ -216,6 +222,16 @@ func (r *SLOPolicyReconciler) discoverTargets(ctx context.Context, slo *sre.SLOP
 		})
 	}
 	return targets, nil
+}
+
+func namespaceExcluded(namespace string, excluded []string) bool {
+	namespace = strings.TrimSpace(namespace)
+	for _, item := range excluded {
+		if namespace == strings.TrimSpace(item) {
+			return true
+		}
+	}
+	return false
 }
 
 func inferServiceJob(svc *corev1.Service) string {

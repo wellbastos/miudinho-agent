@@ -10,7 +10,7 @@ spec:
     plural: slopolicies
     singular: slopolicy
     shortNames: ["slo"]
-  scope: Namespaced
+  scope: Cluster
   versions:
     - name: v1alpha1
       served: true

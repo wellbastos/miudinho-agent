@@ -194,7 +194,7 @@ func TestMatchIncidentLabels(t *testing.T) {
 func TestPolicyResolverRespectsMatchLabels(t *testing.T) {
 	scheme := newTestScheme(t)
 	policy := &sre.AutoRemediationPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "policy"},
 		Spec: sre.AutoRemediationPolicySpec{
 			Selector: sre.PolicySelector{
 				Namespace:   "default",
@@ -227,6 +227,44 @@ func TestPolicyResolverRespectsMatchLabels(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatal("expected no policy match")
+	}
+}
+
+func TestPolicyResolverSkipsExcludedNamespaces(t *testing.T) {
+	scheme := newTestScheme(t)
+	policy := &sre.AutoRemediationPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "global-policy"},
+		Spec: sre.AutoRemediationPolicySpec{
+			Selector: sre.PolicySelector{
+				ExcludedNamespaces: []string{"kube-system"},
+			},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+	resolver := &DefaultIncidentPolicyResolver{Client: cl}
+
+	excludedPI := &sre.PredictiveIncident{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system"},
+		Spec:       sre.PredictiveIncidentSpec{Identity: sre.IncidentIdentity{Namespace: "kube-system"}},
+	}
+	got, err := resolver.Resolve(context.Background(), excludedPI)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if got != nil {
+		t.Fatal("expected excluded namespace to skip policy")
+	}
+
+	appPI := &sre.PredictiveIncident{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "apps"},
+		Spec:       sre.PredictiveIncidentSpec{Identity: sre.IncidentIdentity{Namespace: "apps"}},
+	}
+	got, err = resolver.Resolve(context.Background(), appPI)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected global policy match")
 	}
 }
 
