@@ -21,9 +21,9 @@ Principais capacidades:
 
 O projeto expõe três CRDs:
 
-- `PredictiveIncident`
-- `AutoRemediationPolicy`
-- `SLOPolicy`
+- `PredictiveIncident`: namespaced, criado no namespace do workload afetado.
+- `AutoRemediationPolicy`: global do cluster.
+- `SLOPolicy`: global do cluster.
 
 Os manifests gerados dessas CRDs ficam em `config/crd/bases/` e são copiados para `charts/miudinho-agent/crds/` pelo alvo `make manifests`.
 
@@ -334,6 +334,41 @@ Convenções atuais do reconciler:
 - labels do `Service` são propagadas para o `PredictiveIncident`
 - as queries esperam métricas `http_requests_total` com labels `namespace`, `service`, `job` e `status`
 
+### AutoRemediationPolicy global
+
+`AutoRemediationPolicy` também não recebe `metadata.namespace`. Use `spec.selector.excludedNamespaces` para declarar namespaces onde nenhuma política deve aplicar ações.
+
+Exemplo:
+
+```yaml
+apiVersion: miudinho.o11y.io/v1alpha1
+kind: AutoRemediationPolicy
+metadata:
+  name: default-observe
+spec:
+  selector:
+    excludedNamespaces:
+      - kube-system
+      - kube-public
+      - kube-node-lease
+      - o11y
+    severities: ["critical","high","warning"]
+  guardrails:
+    minAvailableReplicas: 2
+    restartCooldownSeconds: 900
+    blockIfReasons: ["OOMKilled","ImagePullBackOff","ErrImagePull","CreateContainerConfigError"]
+    allowedActions: ["observeOnly","escalate"]
+  rules:
+    - when:
+        source: "alertmanager"
+      actions:
+        - type: "observeOnly"
+    - when:
+        source: "predictive"
+      actions:
+        - type: "observeOnly"
+```
+
 ### Variáveis principais
 
 Os parâmetros mais importantes podem ser configurados por env no chart:
@@ -510,8 +545,8 @@ Exemplos disponíveis:
 Aplicação manual:
 
 ```bash
-kubectl -n o11y apply -f examples/autoremediationpolicy.yaml
-kubectl -n o11y apply -f examples/slopolicy.yaml
+kubectl apply -f examples/autoremediationpolicy.yaml
+kubectl apply -f examples/slopolicy.yaml
 ```
 
 Ou via `Makefile`:
@@ -520,7 +555,7 @@ Ou via `Makefile`:
 make apply-samples
 ```
 
-O sample de `SLOPolicy` usa o modo global e espera `Service`s com a label `miudinho.o11y.io/enabled: "true"` nos namespaces não excluídos.
+Os samples de `SLOPolicy` e `AutoRemediationPolicy` usam recursos globais do cluster. O sample de `SLOPolicy` espera `Service`s com a label `miudinho.o11y.io/enabled: "true"` nos namespaces não excluídos.
 
 ## Endpoints e health checks
 
