@@ -10,25 +10,25 @@ resources:
     namespaced: true
   controller: true
   domain: o11y.io
-  group: sre
+  group: miudinho
   kind: PredictiveIncident
   path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
-    namespaced: true
+    namespaced: false
   controller: true
   domain: o11y.io
-  group: sre
+  group: miudinho
   kind: AutoRemediationPolicy
   path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
-    namespaced: true
+    namespaced: false
   controller: true
   domain: o11y.io
-  group: sre
+  group: miudinho
   kind: SLOPolicy
   path: github.com/wellbastos/miudinho-agent/api/v1alpha1
   version: v1alpha1

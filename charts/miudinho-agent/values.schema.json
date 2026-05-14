@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "log": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["debug", "info", "error"]
+        }
+      }
+    },
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+        },
+        "ports": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "webhook": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "probe": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "metrics": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          }
+        }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "googleApiKey": {
+          "type": "string"
+        },
+        "githubToken": {
+          "type": "string"
+        },
+        "googleChatIncidentsWebhookUrl": {
+          "type": "string"
+        },
+        "webhookToken": {
+          "type": "string"
+        },
+        "lokiUsername": {
+          "type": "string"
+        },
+        "lokiPassword": {
+          "type": "string"
+        },
+        "lokiToken": {
+          "type": "string"
+        }
+      }
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "alertWebhookAddr": {
+          "type": "string",
+          "pattern": "^:.+"
+        },
+        "alertPollInterval": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+        },
+        "alertSourcesEnabled": {
+          "type": "string"
+        },
+        "llmRoutingMode": {
+          "type": "string",
+          "enum": [
+            "ollama_only",
+            "gemini_only",
+            "ollama_decide_gemini_approve",
+            "gemini_decide_ollama_approve",
+            "ollama_primary_gemini_fallback",
+            "gemini_primary_ollama_fallback"
+          ]
+        },
+        "autoObserveOnly": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "executeActions": {
+          "type": "string",
+          "enum": ["true", "false"]
+        },
+        "observeOnlyTtlSeconds": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "lokiTenantId": {
+          "type": "string"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "alertmanagerNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

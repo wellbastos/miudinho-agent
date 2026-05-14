@@ -25,7 +25,7 @@ func TestHandleAlertsCreatesIncidents(t *testing.T) {
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects().Build()
-	handler := NewHandler(cl)
+	handler := NewHandler(cl, nil)
 
 	payload := webhookPayload{
 		Alerts: []webhookAlert{
@@ -85,9 +85,17 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 		t.Fatalf("AddToScheme returned error: %v", err)
 	}
 
+	labels := map[string]string{
+		"alertname": "HighErrorRate",
+		"namespace": "default",
+		"service":   "checkout",
+		"job":       "checkout",
+	}
+	incidentName := incidents.IncidentNameForFingerprint(incidents.CanonicalFingerprint(incidents.ObservedAlert{Labels: labels}))
+
 	existing := &sre.PredictiveIncident{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pi-am-abc123abc123",
+			Name:      incidentName,
 			Namespace: "default",
 		},
 		Spec: sre.PredictiveIncidentSpec{
@@ -97,18 +105,13 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects(existing).Build()
-	handler := NewHandler(cl)
+	handler := NewHandler(cl, nil)
 
 	payload := webhookPayload{
 		Alerts: []webhookAlert{{
 			Status:      "firing",
 			Fingerprint: "abc123abc123999999",
-			Labels: map[string]string{
-				"alertname": "HighErrorRate",
-				"namespace": "default",
-				"service":   "checkout",
-				"job":       "checkout",
-			},
+			Labels:      labels,
 			Annotations: map[string]string{
 				"summary": "new summary",
 			},
@@ -128,7 +131,7 @@ func TestHandleAlertsUpdatesExistingIncident(t *testing.T) {
 	}
 
 	got := &sre.PredictiveIncident{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: "pi-am-abc123abc123", Namespace: "default"}, got); err != nil {
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: incidentName, Namespace: "default"}, got); err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}
 	if got.Spec.Title != "new summary" {
@@ -154,7 +157,7 @@ func TestHandleAlertsAcceptsShortFingerprint(t *testing.T) {
 		t.Fatalf("AddToScheme returned error: %v", err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).Build()
-	handler := NewHandler(cl)
+	handler := NewHandler(cl, nil)
 
 	payload := webhookPayload{
 		Alerts: []webhookAlert{{
@@ -185,9 +188,18 @@ func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
 		t.Fatalf("AddToScheme returned error: %v", err)
 	}
 
+	labels := map[string]string{
+		"alertname": "HighErrorRate",
+		"namespace": "default",
+		"service":   "checkout",
+		"job":       "checkout",
+		"severity":  "critical",
+	}
+	incidentName := incidents.IncidentNameForFingerprint(incidents.CanonicalFingerprint(incidents.ObservedAlert{Labels: labels}))
+
 	existing := &sre.PredictiveIncident{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pi-am-abc123abc123",
+			Name:      incidentName,
 			Namespace: "default",
 		},
 		Spec: sre.PredictiveIncidentSpec{
@@ -200,7 +212,7 @@ func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).WithObjects(existing).Build()
-	handler := NewHandler(cl)
+	handler := NewHandler(cl, nil)
 
 	before := testutil.ToFloat64(appmetrics.ResolvedAlertsTotalForTest("alertmanager", "default", "checkout", "critical"))
 
@@ -208,13 +220,7 @@ func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
 		Alerts: []webhookAlert{{
 			Status:      "resolved",
 			Fingerprint: "abc123abc123999999",
-			Labels: map[string]string{
-				"alertname": "HighErrorRate",
-				"namespace": "default",
-				"service":   "checkout",
-				"job":       "checkout",
-				"severity":  "critical",
-			},
+			Labels:      labels,
 		}},
 	}
 
@@ -231,7 +237,7 @@ func TestHandleAlertsMarksResolvedIncidentAndIncrementsMetric(t *testing.T) {
 	}
 
 	got := &sre.PredictiveIncident{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: "pi-am-abc123abc123", Namespace: "default"}, got); err != nil {
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: incidentName, Namespace: "default"}, got); err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}
 	if got.Status.Phase != sre.PhaseResolved {
@@ -251,7 +257,7 @@ func TestHandleFakeAlertCreatesSyntheticIncident(t *testing.T) {
 	}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&sre.PredictiveIncident{}).Build()
-	handler := NewHandler(cl)
+	handler := NewHandler(cl, nil)
 
 	body := bytes.NewReader([]byte(`{"namespace":"o11y","service":"checkout","github_repository":"apps-checkout-test"}`))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/test/fake-alert", body)

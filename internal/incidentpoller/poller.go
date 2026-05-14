@@ -23,10 +23,10 @@ type AlertSource interface {
 }
 
 type Poller struct {
-	client     client.Client
-	interval   time.Duration
-	sources    []AlertSource
-	ignoredNS  map[string]bool
+	client    client.Client
+	interval  time.Duration
+	sources   []AlertSource
+	ignoredNS map[string]bool
 }
 
 func New(c client.Client, cfg config.AppConfig) *Poller {

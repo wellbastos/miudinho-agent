@@ -4,15 +4,16 @@ Operator Kubernetes para detecção de incidentes, RCA automatizado, remediaçã
 
 ## Visão geral
 
-O `miudinho-agent` observa sinais de incidente, cria recursos `PredictiveIncident`, enriquece contexto com Prometheus e Tempo, consulta um motor de decisão baseado em LLM e decide entre observar, bloquear, mitigar ou escalar o caso.
+O `miudinho-agent` observa sinais de incidente, cria recursos `PredictiveIncident`, enriquece contexto com Prometheus, Tempo e Loki, consulta um motor de decisão baseado em LLM e decide entre observar, bloquear, mitigar ou escalar o caso.
 
 Principais capacidades:
 
 - recebe alertas do Alertmanager em `/api/v1/alerts`
 - consulta alertas ativos por polling em Prometheus e Alertmanager API
 - gera incidentes preditivos a partir de `SLOPolicy` global ou específico
-- enriquece incidentes com dados de Prometheus e Tempo
+- enriquece incidentes com dados de Prometheus, Tempo e, quando configurado, Loki
 - executa RCA com Ollama e/ou Gemini
+- autentica webhooks do Alertmanager com bearer token opcional
 - aplica guardrails antes de ações mutáveis
 - pode reiniciar pods ou executar rollout restart em deployments
 - integra com GitHub Issues, Google Chat e escalonamento operacional
@@ -27,11 +28,13 @@ O projeto expõe três CRDs:
 
 Os manifests gerados dessas CRDs ficam em `config/crd/bases/` e são copiados para `charts/miudinho-agent/crds/` pelo alvo `make manifests`.
 
+As CRDs geradas incluem validações OpenAPI para campos conhecidos, como enums de source/action/phase, limites de strings/listas, thresholds numéricos e campos schemaless preservados para payloads arbitrários de alerta, evidência e ações.
+
 ## Fluxo operacional
 
 1. Um incidente entra por webhook do Alertmanager, por polling nas APIs de alertas, ou é criado por análise preditiva via `SLOPolicy`.
 2. O controller cria ou atualiza um `PredictiveIncident`.
-3. O incidente é enriquecido com evidências de Prometheus e Tempo.
+3. O incidente é enriquecido com evidências de Prometheus, Tempo e Loki quando configurado.
 4. O motor de RCA consulta o modo configurado em `LLM_ROUTING_MODE`.
 5. O operador decide entre observar, bloquear, mitigar ou escalar.
 6. Quando habilitado, o incidente abre ou atualiza uma issue no GitHub, fecha a issue na resolução e pode escalar para N2 via comentário, Alertmanager outbound e Google Chat.
@@ -57,6 +60,7 @@ flowchart TD
 
     PIC --> PROM[Prometheus or Thanos]
     PIC --> TEMPO[Tempo]
+    PIC --> LOKI[Loki]
     PIC --> LLM[LLM Router]
     PIC --> K8S[Kubernetes API]
 
@@ -73,6 +77,7 @@ flowchart TD
 - Go `1.25.9+`
 - Docker para build de imagem
 - Helm `3.x`
+- `kubectl` apontando para o cluster alvo
 - acesso a um cluster Kubernetes para instalação
 
 Versão recomendada:
@@ -94,6 +99,7 @@ Build direto com Go:
 
 ```bash
 go mod tidy
+go mod vendor
 go build -o bin/manager ./cmd/manager
 ```
 
@@ -181,6 +187,8 @@ Esse alvo:
 
 - gera CRDs em `config/crd/bases/`
 - copia os mesmos arquivos para `charts/miudinho-agent/crds/`
+- usa `controller-gen` `v0.18.0`
+- preserva campos schemaless para payloads arbitrários e aplica validações OpenAPI para enums, limites e thresholds conhecidos
 
 ## Build da imagem
 
@@ -189,7 +197,13 @@ make docker-build IMG=seu-registry/miudinho-agent VERSION=0.1.0
 make docker-push IMG=seu-registry/miudinho-agent VERSION=0.1.0
 ```
 
-O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9` e runtime distroless.
+O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9`, dependências em `vendor/` e runtime distroless `static:nonroot`. Antes de buildar a imagem, atualize o vendor quando houver mudança em `go.mod` ou `go.sum`:
+
+```bash
+go mod tidy
+go mod vendor
+docker build -t seu-registry/miudinho-agent:0.1.0 .
+```
 
 ## CI/CD no GitHub
 
@@ -198,6 +212,7 @@ O workflow [`.github/workflows/ci-ghcr.yml`](.github/workflows/ci-ghcr.yml) exec
 Etapas de validação:
 
 - `lint`: `go mod tidy`, verificação de `go.mod` e `go.sum`, `gofmt`, `go vet`, `golangci-lint` e `helm lint`
+- renderização do chart com `helm template`
 - `test`: `go test ./...` com geração de `cover.out` e `go build ./cmd/manager`
 - `security`: `govulncheck ./...` e `trivy` para scan de vulnerabilidades em dependências
 
@@ -227,7 +242,8 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --create-namespace \
   --set image.repository=ghcr.io/wellbastos/miudinho-agent \
   --set image.tag=latest \
-  --set secret.googleApiKey="$GOOGLE_API_KEY"
+  --set secret.googleApiKey="$GOOGLE_API_KEY" \
+  --set secret.webhookToken="$WEBHOOK_TOKEN"
 ```
 
 Instalação com integrações reativas:
@@ -241,6 +257,7 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --set secret.googleApiKey="$GOOGLE_API_KEY" \
   --set secret.githubToken="$GITHUB_TOKEN" \
   --set secret.googleChatIncidentsWebhookUrl="$GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL" \
+  --set secret.webhookToken="$WEBHOOK_TOKEN" \
   --set env.githubOwner=seu-org \
   --set env.githubProductName=produto \
   --set env.githubN2Teams="sre-editor,sre-viewer,sre-admin" \
@@ -272,12 +289,26 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --set secret.googleApiKey="$GOOGLE_API_KEY"
 ```
 
+Exemplo com Loki autenticado:
+
+```bash
+helm upgrade --install miudinho-agent ./charts/miudinho-agent \
+  --namespace o11y \
+  --create-namespace \
+  --set env.lokiUrl=http://loki-gateway.o11y.svc.cluster.local \
+  --set env.lokiTenantId=tenant-prod \
+  --set secret.lokiUsername="$LOKI_USERNAME" \
+  --set secret.lokiPassword="$LOKI_PASSWORD"
+```
+
 Observações importantes:
 
 - o caminho preditivo consulta métricas no Prometheus
 - o caminho reativo aceita webhook inbound do Alertmanager e também faz polling de alertas ativos em Prometheus e Alertmanager API
+- defina `secret.webhookToken` em produção e configure o Alertmanager com `Authorization: Bearer <token>`
 - o `Service` do chart é `ClusterIP`; para tráfego externo, exponha com `Ingress`, `LoadBalancer` ou `port-forward`
 - o chart precisa listar `Service`s para o modo global de `SLOPolicy`
+- `networkPolicy.enabled=true` por padrão, liberando ingress para webhook a partir dos namespaces listados em `networkPolicy.alertmanagerNamespaces`
 
 Usando os alvos do `Makefile`:
 
@@ -287,6 +318,14 @@ make uninstall NAMESPACE=o11y
 ```
 
 `make install` e `make deploy` executam `make manifests` antes do `helm upgrade --install`.
+
+Também existe um script operacional para build, push e deploy:
+
+```bash
+./scripts/deploy.sh o11y v1.2.3
+```
+
+O script atual publica a imagem em `ghcr.io/wellbastos/miudinho-agent/miudinho-agent`, usa `o11y` como namespace e exige `docker`, `go`, `helm`, `kubectl` e `gcloud` no `PATH`.
 
 ## Configuração
 
@@ -373,11 +412,12 @@ spec:
 
 Os parâmetros mais importantes podem ser configurados por env no chart:
 
-- observabilidade: `PROM_URL`, `ALERTMANAGER_API_URL`, `ALERTMANAGER_OUTBOUND_URL`, `TEMPO_URL`
+- observabilidade: `PROM_URL`, `ALERTMANAGER_API_URL`, `ALERTMANAGER_OUTBOUND_URL`, `TEMPO_URL`, `TEMPO_PREDICTIVE_PATH`, `TEMPO_PREDICTIVE_QUERY_PARAM`
+- logs: `LOKI_URL`, `LOKI_USERNAME`, `LOKI_PASSWORD`, `LOKI_TOKEN`, `LOKI_TENANT_ID`
 - LLM: `LLM_ROUTING_MODE`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `GEMINI_BASE_URL`, `GEMINI_MODEL`, `SYSTEM_PROMPT`, `APPROVER_PROMPT`
 - GitHub: `GITHUB_OWNER`, `GITHUB_REPOSITORY_PREFIX`, `GITHUB_PRODUCT_NAME`, `GITHUB_N2_TEAMS`
 - notificações: `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
-- execução: `ALERT_WEBHOOK_ADDR`, `ALERT_POLL_INTERVAL`, `ALERT_SOURCES_ENABLED`, `EXECUTE_ACTIONS`, `AUTO_OBSERVE_ONLY`, `OBSERVE_ONLY_TTL_SECONDS`, `LEADER_ELECTION`
+- execução: `ALERT_WEBHOOK_ADDR`, `WEBHOOK_TOKEN`, `ALERT_POLL_INTERVAL`, `ALERT_SOURCES_ENABLED`, `IGNORED_NAMESPACES`, `EXECUTE_ACTIONS`, `AUTO_OBSERVE_ONLY`, `OBSERVE_ONLY_TTL_SECONDS`, `LEADER_ELECTION`
 
 Com `GITHUB_REPOSITORY_PREFIX=apps` e `GITHUB_PRODUCT_NAME=foo`, o operador interage com o repositório `apps-foo`. Se você usar `env.githubRepositoryPrefix=incidents` e `env.githubProductName=checkout`, o fallback vira `incidents-checkout`.
 
@@ -465,7 +505,7 @@ As séries mais úteis para operação imediata são:
 
 ## Principais values do chart
 
-Os valores padrão estão em [charts/miudinho-agent/values.yaml](/Users/well/code-mac/miudinho-agent/charts/miudinho-agent/values.yaml:1).
+Os valores padrão estão em [charts/miudinho-agent/values.yaml](/Users/well/code-mac/miudinho-agent/charts/miudinho-agent/values.yaml:1). O chart também inclui [values.schema.json](/Users/well/code-mac/miudinho-agent/charts/miudinho-agent/values.schema.json:1), usado pelo Helm para validar tipos, enums e portas antes do deploy.
 
 Campos mais usados:
 
@@ -493,6 +533,10 @@ Campos mais usados:
 - `secret.googleApiKey`
 - `secret.githubToken`
 - `secret.googleChatIncidentsWebhookUrl`
+- `secret.webhookToken`
+- `secret.lokiUsername`
+- `secret.lokiPassword`
+- `secret.lokiToken`
 - `env.alertWebhookAddr`
 - `env.alertPollInterval`
 - `env.alertSourcesEnabled`
@@ -500,6 +544,10 @@ Campos mais usados:
 - `env.alertmanagerApiUrl`
 - `env.promUrl`
 - `env.tempoUrl`
+- `env.tempoPredictivePath`
+- `env.tempoPredictiveQueryParam`
+- `env.lokiUrl`
+- `env.lokiTenantId`
 - `env.ollamaBaseUrl`
 - `env.ollamaModel`
 - `env.geminiBaseUrl`
@@ -514,6 +562,11 @@ Campos mais usados:
 - `env.autoObserveOnly`
 - `env.observeOnlyTtlSeconds`
 - `env.executeActions`
+- `env.ignoredNamespaces`
+- `networkPolicy.enabled`
+- `networkPolicy.alertmanagerNamespaces`
+
+Os secrets do chart usam string vazia por padrão para não habilitar integrações externas com placeholder. Defina somente as credenciais das integrações que você quer usar.
 
 Os demais campos do chart seguem o padrão de `values.yaml` e normalmente só precisam ser alterados quando você estiver integrando com um stack específico de observabilidade, autenticação ou política de deploy.
 
@@ -531,9 +584,11 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
 
 Nesse caso, o secret precisa expor as chaves:
 
-- `GOOGLE_API_KEY`
-- `GITHUB_TOKEN`
-- `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
+- `GOOGLE_API_KEY`, se usar Gemini
+- `GITHUB_TOKEN`, se usar GitHub Issues
+- `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`, se usar Google Chat
+- `WEBHOOK_TOKEN`, se habilitar autenticação do webhook
+- `LOKI_USERNAME` e `LOKI_PASSWORD`, ou `LOKI_TOKEN`, se usar Loki autenticado
 
 ## Samples
 
@@ -567,6 +622,8 @@ Os samples de `SLOPolicy` e `AutoRemediationPolicy` usam recursos globais do clu
 
 O `Service` do chart expõe as portas de webhook, probe e métricas.
 
+Quando `WEBHOOK_TOKEN` estiver configurado, tanto `/api/v1/alerts` quanto `/api/v1/test/fake-alert` exigem `Authorization: Bearer <token>`.
+
 Exemplo de receiver do Alertmanager:
 
 ```yaml
@@ -574,6 +631,10 @@ receivers:
   - name: miudinho-agent
     webhook_configs:
       - url: http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/alerts
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: <WEBHOOK_TOKEN>
 ```
 
 Exemplo para gerar um alerta sintético e validar a criação assíncrona de issue:
@@ -581,6 +642,7 @@ Exemplo para gerar um alerta sintético e validar a criação assíncrona de iss
 ```bash
 curl -X POST http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/test/fake-alert \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $WEBHOOK_TOKEN" \
   -d '{
     "namespace": "o11y",
     "service": "checkout",

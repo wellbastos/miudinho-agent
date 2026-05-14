@@ -52,17 +52,16 @@ podMonitor:
 secret:
   create: true
   name: ""
-  googleApiKey: "COLOQUE_AQUI"
-  githubToken: "COLOQUE_AQUI"
-  googleChatIncidentsWebhookUrl: "COLOQUE_AQUI"
+  googleApiKey: ""
+  githubToken: ""
+  googleChatIncidentsWebhookUrl: ""
   # Token compartilhado para autenticar o Alertmanager no webhook.
   # Gere com: openssl rand -base64 32
   # Configure o Alertmanager para enviar: Authorization: Bearer <token>
   # Se vazio, a autenticação é desabilitada (não recomendado em produção).
   # webhookToken: ""
-  lokiUsername: "COLOQUE_AQUI"
-  lokiPassword: "COLOQUE_AQUI"
-  lokiTenantId: "COLOQUE_AQUI"
+  lokiUsername: ""
+  lokiPassword: ""
   # lokiToken: # Bearer token (aceita base64)
 
 env:
@@ -91,6 +90,7 @@ env:
   executeActions: "true"
   ignoredNamespaces: "kube-system,kube-node-lease,kube-public"
   lokiUrl: "http://loki-gateway.o11y.svc.cluster.local"
+  lokiTenantId: ""
 
 resources:
   requests:

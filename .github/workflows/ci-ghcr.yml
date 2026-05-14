@@ -66,6 +66,9 @@ jobs:
       - name: Helm lint
         run: helm lint ${{ env.CHART_PATH }}
 
+      - name: Render Helm chart
+        run: helm template miudinho-agent ${{ env.CHART_PATH }} --namespace o11y
+
   test:
     name: Test
     runs-on: ubuntu-latest

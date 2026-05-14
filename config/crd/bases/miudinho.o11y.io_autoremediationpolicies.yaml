@@ -1,6 +1,9 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
   name: autoremediationpolicies.miudinho.o11y.io
 spec:
   group: miudinho.o11y.io
@@ -8,16 +11,133 @@ spec:
     kind: AutoRemediationPolicy
     listKind: AutoRemediationPolicyList
     plural: autoremediationpolicies
+    shortNames:
+    - arp
     singular: autoremediationpolicy
-    shortNames: ["arp"]
   scope: Cluster
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      subresources:
-        status: {}
-      schema:
-        openAPIV3Schema:
-          type: object
-          x-kubernetes-preserve-unknown-fields: true
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              guardrails:
+                properties:
+                  allowedActions:
+                    items:
+                      enum:
+                      - observeOnly
+                      - escalate
+                      - restartPod
+                      - rolloutRestartDeployment
+                      type: string
+                    maxItems: 16
+                    type: array
+                  blockIfReasons:
+                    items:
+                      type: string
+                    maxItems: 64
+                    type: array
+                  minAvailableReplicas:
+                    minimum: 0
+                    type: integer
+                  restartCooldownSeconds:
+                    minimum: 0
+                    type: integer
+                type: object
+              rules:
+                items:
+                  properties:
+                    actions:
+                      items:
+                        properties:
+                          args:
+                            x-kubernetes-preserve-unknown-fields: true
+                          type:
+                            enum:
+                            - observeOnly
+                            - escalate
+                            - restartPod
+                            - rolloutRestartDeployment
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      maxItems: 16
+                      minItems: 1
+                      type: array
+                    when:
+                      properties:
+                        classification:
+                          maxLength: 128
+                          type: string
+                        source:
+                          enum:
+                          - alertmanager
+                          - prometheus
+                          - predictive
+                          - k8s-event
+                          - manual
+                          type: string
+                      type: object
+                  required:
+                  - actions
+                  - when
+                  type: object
+                maxItems: 64
+                minItems: 1
+                type: array
+              selector:
+                properties:
+                  excludedNamespaces:
+                    items:
+                      type: string
+                    maxItems: 128
+                    type: array
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    maxProperties: 32
+                    type: object
+                  namespace:
+                    maxLength: 63
+                    type: string
+                  severities:
+                    items:
+                      type: string
+                    maxItems: 16
+                    type: array
+                type: object
+            required:
+            - rules
+            - selector
+            type: object
+          status:
+            properties:
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

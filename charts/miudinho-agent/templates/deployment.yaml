@@ -69,16 +69,19 @@ spec:
                 secretKeyRef:
                   name: {{ include "miudinho-agent.secretName" . }}
                   key: GOOGLE_API_KEY
+                  optional: true
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "miudinho-agent.secretName" . }}
                   key: GITHUB_TOKEN
+                  optional: true
             - name: GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "miudinho-agent.secretName" . }}
                   key: GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL
+                  optional: true
             - name: GITHUB_OWNER
               value: {{ .Values.env.githubOwner | quote }}
             - name: GITHUB_REPOSITORY_PREFIX

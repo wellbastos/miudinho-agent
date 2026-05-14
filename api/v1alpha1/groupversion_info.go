@@ -1,3 +1,5 @@
+// +kubebuilder:object:generate=true
+// +groupName=miudinho.o11y.io
 package v1alpha1
 
 import (

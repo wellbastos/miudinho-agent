@@ -16,7 +16,7 @@ $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
 $(CONTROLLER_GEN): $(LOCALBIN)
-	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
 
 $(GOLANGCI_LINT): $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.4.0
@@ -49,14 +49,13 @@ run: fmt vet
 ##@ Code generation
 .PHONY: generate
 generate: $(CONTROLLER_GEN)
-	$(CONTROLLER_GEN) object:headerFile="" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="" paths="./api/..."
 
 .PHONY: manifests
 manifests: $(CONTROLLER_GEN)
 	$(CONTROLLER_GEN) \
-	  crd:crdVersions=v1 \
-	  rbac:roleName=miudinho-agent \
-	  paths="./..." \
+	  crd:crdVersions=v1,allowDangerousTypes=true \
+	  paths="./api/..." \
 	  output:crd:artifacts:config=config/crd/bases
 	cp config/crd/bases/*.yaml charts/miudinho-agent/crds/
 

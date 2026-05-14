@@ -44,25 +44,25 @@ func TestPollerCreatesIncidentFromPrometheus(t *testing.T) {
 }
 
 func TestPollerCreatesIncidentFromAlertmanagerAPI(t *testing.T) {
-	poller, cl := newPollerForTest(t, stubAlertSource{name: "alertmanager", alerts: []incidents.ObservedAlert{
-		{
-			Source:      "alertmanager",
-			Status:      "active",
-			Fingerprint: "abc123abc123",
-			Labels: map[string]string{
-				"alertname": "PodCrashLooping",
-				"namespace": "default",
-				"service":   "payments",
-			},
+	alert := incidents.ObservedAlert{
+		Source:      "alertmanager",
+		Status:      "active",
+		Fingerprint: "abc123abc123",
+		Labels: map[string]string{
+			"alertname": "PodCrashLooping",
+			"namespace": "default",
+			"service":   "payments",
 		},
-	}})
+	}
+	poller, cl := newPollerForTest(t, stubAlertSource{name: "alertmanager", alerts: []incidents.ObservedAlert{alert}})
 
 	if err := poller.Sync(context.Background()); err != nil {
 		t.Fatalf("Sync returned error: %v", err)
 	}
 
 	got := &sre.PredictiveIncident{}
-	if err := cl.Get(context.Background(), client.ObjectKey{Name: "pi-am-abc123abc123", Namespace: "default"}, got); err != nil {
+	name := incidents.IncidentNameForFingerprint(incidents.CanonicalFingerprint(alert))
+	if err := cl.Get(context.Background(), client.ObjectKey{Name: name, Namespace: "default"}, got); err != nil {
 		t.Fatalf("Get returned error: %v", err)
 	}
 	if got.Spec.Identity.Service != "payments" {

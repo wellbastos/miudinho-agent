@@ -3,39 +3,56 @@ package v1alpha1
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 type SLOServiceRef struct {
-	Namespace   string            `json:"namespace,omitempty"`
-	Service     string            `json:"service,omitempty"`
-	Job         string            `json:"job,omitempty"`
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace,omitempty"`
+	// +kubebuilder:validation:MaxLength=63
+	Service string `json:"service,omitempty"`
+	// +kubebuilder:validation:MaxLength=63
+	Job string `json:"job,omitempty"`
+	// +kubebuilder:validation:MaxProperties=32
 	MatchLabels map[string]string `json:"matchLabels,omitempty"`
 }
 
 type SLOObjective struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1
 	Target float64 `json:"target"`
-	Window string  `json:"window"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+[smhd]$`
+	Window string `json:"window"`
+}
+
+type SLOHTTP5xxSignals struct {
+	// +kubebuilder:validation:Minimum=0
+	ErrorRateThresholdPct float64 `json:"errorRateThresholdPct,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	SlopeThreshold float64 `json:"slopeThreshold,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	Min5xxRPS float64 `json:"min5xxRPS,omitempty"`
+}
+
+type SLOOOMSignals struct {
+	// +kubebuilder:validation:Minimum=1
+	TimeToOomThresholdSeconds int `json:"timeToOomThresholdSeconds,omitempty"`
+}
+
+type SLOLatencySignals struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 type SLOSignals struct {
-	Http5xx struct {
-		ErrorRateThresholdPct float64 `json:"errorRateThresholdPct,omitempty"`
-		SlopeThreshold        float64 `json:"slopeThreshold,omitempty"`
-		Min5xxRPS             float64 `json:"min5xxRPS,omitempty"`
-	} `json:"http5xx,omitempty"`
-
-	OOM struct {
-		TimeToOomThresholdSeconds int `json:"timeToOomThresholdSeconds,omitempty"`
-	} `json:"oom,omitempty"`
-
-	Latency struct {
-		Enabled bool `json:"enabled,omitempty"`
-	} `json:"latency,omitempty"`
+	Http5xx SLOHTTP5xxSignals `json:"http5xx,omitempty"`
+	OOM     SLOOOMSignals     `json:"oom,omitempty"`
+	Latency SLOLatencySignals `json:"latency,omitempty"`
 }
 
 type SLOPolicySpec struct {
-	Service            SLOServiceRef `json:"service"`
-	ExcludedNamespaces []string      `json:"excludedNamespaces,omitempty"`
-	Objective          SLOObjective  `json:"objective"`
-	Signals            SLOSignals    `json:"signals"`
-	ScheduleSeconds    int           `json:"scheduleSeconds,omitempty"`
+	Service SLOServiceRef `json:"service"`
+	// +kubebuilder:validation:MaxItems=128
+	ExcludedNamespaces []string     `json:"excludedNamespaces,omitempty"`
+	Objective          SLOObjective `json:"objective"`
+	Signals            SLOSignals   `json:"signals"`
+	// +kubebuilder:validation:Minimum=30
+	ScheduleSeconds int `json:"scheduleSeconds,omitempty"`
 }
 
 type SLOPolicyStatus struct {
@@ -45,7 +62,7 @@ type SLOPolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=slo
 type SLOPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
