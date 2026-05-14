@@ -104,5 +104,3 @@ func collectActionTypes(pol *sre.AutoRemediationPolicy) []string {
 	}
 	return out
 }
-
-

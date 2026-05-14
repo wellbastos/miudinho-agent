@@ -74,7 +74,7 @@ flowchart TD
 
 ## Requisitos
 
-- Go `1.25.9+`
+- Go `1.25.10+`
 - Docker para build de imagem
 - Helm `3.x`
 - `kubectl` apontando para o cluster alvo
@@ -82,8 +82,8 @@ flowchart TD
 
 Versão recomendada:
 
-- usar Go `1.25.9` ou superior
-- evitar builds em `go1.25.0` até `go1.25.8` por correções de segurança da stdlib identificadas por `govulncheck`
+- usar Go `1.25.10` ou superior
+- evitar builds em `go1.25.0` até `go1.25.9` por correções de segurança da stdlib identificadas por `govulncheck`
 
 ## Desenvolvimento local
 
@@ -197,7 +197,7 @@ make docker-build IMG=seu-registry/miudinho-agent VERSION=0.1.0
 make docker-push IMG=seu-registry/miudinho-agent VERSION=0.1.0
 ```
 
-O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9`, dependências em `vendor/` e runtime distroless `static:nonroot`. Antes de buildar a imagem, atualize o vendor quando houver mudança em `go.mod` ou `go.sum`:
+O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.10`, dependências em `vendor/` e runtime distroless `static:nonroot`. Antes de buildar a imagem, atualize o vendor quando houver mudança em `go.mod` ou `go.sum`:
 
 ```bash
 go mod tidy

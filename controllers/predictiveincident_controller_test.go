@@ -466,9 +466,9 @@ func (*githubSuccessClient) Repository(string) string { return "apps-checkout" }
 func (*githubSuccessClient) CreateIssue(context.Context, string, string, string, []string) (*githubissues.Issue, error) {
 	return &githubissues.Issue{}, nil
 }
-func (*githubSuccessClient) AddComment(context.Context, string, int, string) error { return nil }
-func (*githubSuccessClient) CloseIssue(context.Context, string, int) error         { return nil }
-func (*githubSuccessClient) ReopenIssue(context.Context, string, int) error        { return nil }
+func (*githubSuccessClient) AddComment(context.Context, string, int, string) error  { return nil }
+func (*githubSuccessClient) CloseIssue(context.Context, string, int) error          { return nil }
+func (*githubSuccessClient) ReopenIssue(context.Context, string, int) error         { return nil }
 func (*githubSuccessClient) UpdateIssue(context.Context, string, int, string) error { return nil }
 func (*githubSuccessClient) FindOpenIssue(context.Context, string, string) (*githubissues.Issue, error) {
 	return nil, nil

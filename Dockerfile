@@ -1,4 +1,4 @@
-FROM golang:1.25.9 AS build
+FROM golang:1.25.10 AS build
 WORKDIR /src
 
 # Copiar arquivos de dependências primeiro para maximizar cache de camadas

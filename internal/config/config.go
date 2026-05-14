@@ -9,8 +9,8 @@ import (
 )
 
 type HTTPConfig struct {
-	AlertWebhookAddr    string
-	WebhookToken        string
+	AlertWebhookAddr string
+	WebhookToken     string
 }
 
 type ObservabilityConfig struct {

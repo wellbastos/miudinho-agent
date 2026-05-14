@@ -40,7 +40,7 @@ type geminiGenerationConfig struct {
 }
 
 type geminiGenerateRequest struct {
-	Contents         []geminiContent        `json:"contents"`
+	Contents         []geminiContent         `json:"contents"`
 	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 

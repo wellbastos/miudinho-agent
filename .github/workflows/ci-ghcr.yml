@@ -17,7 +17,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: "1.25.9"
+  GO_VERSION: "1.25.10"
   CHART_NAME: miudinho-agent
   CHART_PATH: ./charts/miudinho-agent
 
@@ -43,11 +43,12 @@ jobs:
       - name: Verify module files
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum
+          go mod vendor
+          git diff --exit-code go.mod go.sum vendor
 
       - name: Run gofmt check
         run: |
-          test -z "$(git ls-files '*.go' | xargs gofmt -l)"
+          test -z "$(git ls-files '*.go' ':!:vendor/**' | xargs gofmt -l)"
 
       - name: Run go vet
         run: go vet ./...

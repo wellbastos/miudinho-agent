@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
 	"github.com/wellbastos/miudinho-agent/internal/config"
@@ -15,7 +16,6 @@ import (
 	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"github.com/wellbastos/miudinho-agent/internal/telemetry"
-	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
