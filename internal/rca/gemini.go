@@ -35,8 +35,13 @@ type geminiContent struct {
 	Parts []geminiPart `json:"parts"`
 }
 
+type geminiGenerationConfig struct {
+	ResponseMimeType string `json:"responseMimeType,omitempty"`
+}
+
 type geminiGenerateRequest struct {
-	Contents []geminiContent `json:"contents"`
+	Contents         []geminiContent        `json:"contents"`
+	GenerationConfig *geminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type geminiGenerateResponse struct {
@@ -50,7 +55,17 @@ type geminiGenerateResponse struct {
 }
 
 func (g *GeminiClient) endpoint() string {
-	return fmt.Sprintf("%s/v1beta/models/%s:generateContent?key=%s", g.BaseURL, g.Model, g.APIKey)
+	return fmt.Sprintf("%s/v1beta/models/%s:generateContent", g.BaseURL, g.Model)
+}
+
+func (g *GeminiClient) newRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("gemini: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.APIKey)
+	return req, nil
 }
 
 func (g *GeminiClient) Healthcheck(ctx context.Context) error {
@@ -61,10 +76,15 @@ func (g *GeminiClient) Healthcheck(ctx context.Context) error {
 	body := geminiGenerateRequest{
 		Contents: []geminiContent{{Parts: []geminiPart{{Text: "Respond only with OK"}}}},
 	}
-	raw, _ := json.Marshal(body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("gemini: marshal healthcheck body: %w", err)
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
+	req, err := g.newRequest(ctx, raw)
+	if err != nil {
+		return err
+	}
 
 	resp, err := g.HTTP.Do(req)
 	if err != nil {
@@ -86,12 +106,23 @@ func (g *GeminiClient) Decide(ctx context.Context, systemPrompt string, input ma
 	}
 
 	payload := map[string]any{"system": systemPrompt, "input": input}
-	b, _ := json.Marshal(payload)
-	body := geminiGenerateRequest{Contents: []geminiContent{{Parts: []geminiPart{{Text: string(b)}}}}}
-	raw, _ := json.Marshal(body)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("gemini: marshal decide payload: %w", err)
+	}
+	body := geminiGenerateRequest{
+		Contents:         []geminiContent{{Parts: []geminiPart{{Text: string(b)}}}},
+		GenerationConfig: &geminiGenerationConfig{ResponseMimeType: "application/json"},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("gemini: marshal decide body: %w", err)
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
+	req, err := g.newRequest(ctx, raw)
+	if err != nil {
+		return "", err
+	}
 
 	resp, err := g.HTTP.Do(req)
 	if err != nil {
@@ -121,12 +152,23 @@ func (g *GeminiClient) Approve(ctx context.Context, approverPrompt string, input
 	}
 
 	payload := map[string]any{"system": approverPrompt, "input": input}
-	b, _ := json.Marshal(payload)
-	body := geminiGenerateRequest{Contents: []geminiContent{{Parts: []geminiPart{{Text: string(b)}}}}}
-	raw, _ := json.Marshal(body)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("gemini: marshal approve payload: %w", err)
+	}
+	body := geminiGenerateRequest{
+		Contents:         []geminiContent{{Parts: []geminiPart{{Text: string(b)}}}},
+		GenerationConfig: &geminiGenerationConfig{ResponseMimeType: "application/json"},
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("gemini: marshal approve body: %w", err)
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, g.endpoint(), bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
+	req, err := g.newRequest(ctx, raw)
+	if err != nil {
+		return "", err
+	}
 
 	resp, err := g.HTTP.Do(req)
 	if err != nil {

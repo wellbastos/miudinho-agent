@@ -95,6 +95,13 @@ spec:
               value: {{ .Values.env.observeOnlyTtlSeconds | quote }}
             - name: EXECUTE_ACTIONS
               value: {{ .Values.env.executeActions | quote }}
+            {{- if .Values.secret.webhookToken }}
+            - name: WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: WEBHOOK_TOKEN
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -109,6 +116,10 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -101,6 +101,32 @@ var (
 		},
 		[]string{"target", "result"},
 	)
+
+	llmRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "miudinho_agent_llm_requests_total",
+			Help: "Total de requisicoes enviadas aos provedores LLM.",
+		},
+		[]string{"provider", "operation", "result"},
+	)
+
+	llmRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "miudinho_agent_llm_request_duration_seconds",
+			Help:    "Duracao das requisicoes aos provedores LLM.",
+			Buckets: []float64{0.5, 1, 2, 5, 10, 15, 20, 30},
+		},
+		[]string{"provider", "operation"},
+	)
+
+	llmConfidence = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "miudinho_agent_llm_confidence",
+			Help:    "Distribuicao de confidence retornado pelo LLM nas decisoes.",
+			Buckets: []float64{0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0},
+		},
+		[]string{"provider"},
+	)
 )
 
 func init() {
@@ -121,6 +147,9 @@ func register() {
 			alertsDeduplicatedTotal,
 			polledIncidentsSyncedTotal,
 			escalationNotificationsTotal,
+			llmRequestsTotal,
+			llmRequestDuration,
+			llmConfidence,
 		)
 	})
 }
@@ -180,6 +209,24 @@ func RecordPolledIncidentSync(result string) {
 func RecordEscalationNotification(target, result string) {
 	register()
 	escalationNotificationsTotal.WithLabelValues(sanitize(target, "unknown"), sanitize(result, "success")).Inc()
+}
+
+func RecordLLMRequest(provider, operation, result string, duration time.Duration) {
+	register()
+	llmRequestsTotal.WithLabelValues(
+		sanitize(provider, "unknown"),
+		sanitize(operation, "decide"),
+		sanitize(result, "success"),
+	).Inc()
+	llmRequestDuration.WithLabelValues(
+		sanitize(provider, "unknown"),
+		sanitize(operation, "decide"),
+	).Observe(duration.Seconds())
+}
+
+func RecordLLMConfidence(provider string, confidence float64) {
+	register()
+	llmConfidence.WithLabelValues(sanitize(provider, "unknown")).Observe(confidence)
 }
 
 func ResolvedAlertsTotalForTest(source, namespace, service, severity string) prometheus.Counter {

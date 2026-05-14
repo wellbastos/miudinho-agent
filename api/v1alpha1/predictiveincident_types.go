@@ -6,6 +6,7 @@ type IncidentSource string
 
 const (
 	SourceAlertmanager IncidentSource = "alertmanager"
+	SourcePrometheus   IncidentSource = "prometheus"
 	SourcePredictive   IncidentSource = "predictive"
 	SourceK8sEvent     IncidentSource = "k8s-event"
 	SourceManual       IncidentSource = "manual"
@@ -56,8 +57,10 @@ type GitHubIssueStatus struct {
 }
 
 type AlertmanagerStatus struct {
-	EscalationSent bool   `json:"escalationSent,omitempty"`
-	LastSentTime   string `json:"lastSentTime,omitempty"`
+	EscalationSent     bool   `json:"escalationSent,omitempty"`
+	LastSentTime       string `json:"lastSentTime,omitempty"`
+	GitHubAlertSent    bool   `json:"githubAlertSent,omitempty"`
+	GitHubAlertSentAt  string `json:"githubAlertSentAt,omitempty"`
 }
 
 type GoogleChatStatus struct {
@@ -102,6 +105,13 @@ type PredictiveIncidentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Severity",type="string",JSONPath=".spec.severity"
+// +kubebuilder:printcolumn:name="Source",type="string",JSONPath=".spec.source"
+// +kubebuilder:printcolumn:name="Confidence",type="number",JSONPath=".status.rca.confidence",format="float"
+// +kubebuilder:printcolumn:name="Service",type="string",JSONPath=".spec.identity.service"
+// +kubebuilder:printcolumn:name="Namespace",type="string",JSONPath=".spec.identity.namespace"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type PredictiveIncident struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -37,7 +37,10 @@ type ollamaGenerateResponse struct {
 }
 
 func (o *OllamaClient) Healthcheck(ctx context.Context) error {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, o.BaseURL+"/api/tags", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.BaseURL+"/api/tags", nil)
+	if err != nil {
+		return fmt.Errorf("ollama: build healthcheck request: %w", err)
+	}
 	resp, err := o.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -56,16 +59,25 @@ func (o *OllamaClient) Decide(ctx context.Context, systemPrompt string, input ma
 		"system": systemPrompt,
 		"input":  input,
 	}
-	b, _ := json.Marshal(payload)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("ollama: marshal payload: %w", err)
+	}
 
 	body := ollamaGenerateRequest{
 		Model:  o.Model,
 		Prompt: string(b),
 		Stream: false,
 	}
-	raw, _ := json.Marshal(body)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("ollama: marshal body: %w", err)
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/generate", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/api/generate", bytes.NewReader(raw))
+	if err != nil {
+		return "", fmt.Errorf("ollama: build request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := o.HTTP.Do(req)

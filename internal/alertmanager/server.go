@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
 
 type Server struct {
@@ -20,16 +20,24 @@ type Server struct {
 
 func NewServer(cfg config.AppConfig, handler *Handler, engine *rca.Engine) *Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/alerts", handler.HandleAlerts)
-	mux.HandleFunc("/api/v1/test/fake-alert", handler.HandleFakeAlert)
+
+	token := cfg.HTTP.WebhookToken
+	authMiddleware := newAuthMiddleware(token)
+
+	mux.Handle("/api/v1/alerts", authMiddleware(http.HandlerFunc(handler.HandleAlerts)))
+	mux.Handle("/api/v1/test/fake-alert", authMiddleware(http.HandlerFunc(handler.HandleFakeAlert)))
+
+	// /healthz: apenas verifica se o processo está vivo (sem chamadas externas a LLMs)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	// /engine-status: mostra estado do circuit breaker e saúde dos LLMs (não usado como liveness)
+	mux.HandleFunc("/engine-status", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := rca.WithTimeout()
 		defer cancel()
 		engine.Healthcheck(ctx)
-		if err := healthz.Ping(r); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     true,
@@ -44,6 +52,25 @@ func NewServer(cfg config.AppConfig, handler *Handler, engine *rca.Engine) *Serv
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
+	}
+}
+
+// newAuthMiddleware retorna um middleware que valida o header Authorization: Bearer <token>.
+// Se token estiver vazio, a autenticação é desabilitada (modo compatível com versões anteriores).
+func newAuthMiddleware(token string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if token == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != token {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 

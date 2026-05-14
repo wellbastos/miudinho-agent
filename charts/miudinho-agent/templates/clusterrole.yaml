@@ -8,7 +8,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["miudinho.o11y.io"]
     resources: ["predictiveincidents", "autoremediationpolicies", "slopolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

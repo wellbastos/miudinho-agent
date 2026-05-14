@@ -3,12 +3,12 @@ replicaCount: 1
 image:
   repository: ghcr.io/wellbastos/miudinho-agent
   tag: "latest"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 log:
   level: "info"
 
-nameOverride: "miudinho-agent" 
+nameOverride: "miudinho-agent"
 fullnameOverride: "miudinho-agent"
 
 serviceAccount:
@@ -30,7 +30,7 @@ service:
     metrics: 8081
 
 serviceMonitor:
-  enabled: false
+  enabled: true
   namespace: ""
   labels: {}
   annotations: {}
@@ -55,6 +55,11 @@ secret:
   googleApiKey: "COLOQUE_AQUI"
   githubToken: "COLOQUE_AQUI"
   googleChatIncidentsWebhookUrl: "COLOQUE_AQUI"
+  # Token compartilhado para autenticar o Alertmanager no webhook.
+  # Gere com: openssl rand -base64 32
+  # Configure o Alertmanager para enviar: Authorization: Bearer <token>
+  # Se vazio, a autenticação é desabilitada (não recomendado em produção).
+  # webhookToken: ""
 
 env:
   alertWebhookAddr: ":8090"
@@ -62,26 +67,47 @@ env:
   alertSourcesEnabled: "prometheus,alertmanager"
   alertmanagerOutboundUrl: "http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts"
   alertmanagerApiUrl: "http://alertmanager-operated.o11y.svc.cluster.local:9093/api/v2/alerts"
-  promUrl: "http://thanos-query.o11y.svc.cluster.local:10901"
+  promUrl: "http://thanos-query.o11y.svc.cluster.local:10902"
   tempoUrl: "http://tempo.o11y.svc.cluster.local:3100"
   tempoPredictivePath: "api/search"
   tempoPredictiveQueryParam: "q"
   ollamaBaseUrl: "http://ollama.o11y.svc.cluster.local:11434"
   ollamaModel: "llama3.1:8b"
   geminiBaseUrl: "https://generativelanguage.googleapis.com"
-  geminiModel: "gemini-1.5-pro"
+  geminiModel: "gemini-2.5-flash"
   systemPrompt: "Você é um Agente SRE de produção. Responda sempre em JSON válido com classification, confidence, summary, evidence, prom_queries, actions, rollback_or_next_steps, escalation. Para predictive, priorize low-risk. Confidence < 0.70 => sem mudanças."
   approverPrompt: "Você é o Change Approver. Responda somente JSON com approved, risk_level, reasons, required_changes. Bloqueie ações arriscadas e qualquer confidence < 0.70."
   githubOwner: "wellbastos"
-  githubRepositoryPrefix: "apps-"
+  githubRepositoryPrefix: "" #"apps-"
   githubProductName: "miudinho-agent" # repo name
   githubN2Teams: "sre-editor,sre-viewer,sre-admin"
-  llmRoutingMode: "ollama_only"
-  autoObserveOnly: "true"
+  llmRoutingMode: "gemini_only"
+  autoObserveOnly: "false"
   observeOnlyTtlSeconds: "300"
-  executeActions: "false"
+  executeActions: "true"
 
-resources: {}
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+networkPolicy:
+  enabled: true
+  # Namespaces de onde o Alertmanager pode enviar webhooks
+  alertmanagerNamespaces:
+    - o11y
 
 nodeSelector: {}
 

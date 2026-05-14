@@ -215,22 +215,32 @@ type DefaultIncidentActionExecutor struct {
 	Config config.AppConfig
 }
 
+// isInfrastructureAction retorna true para ações que modificam infraestrutura (requerem execute_actions=true).
+// Ações de notificação/status como "escalate" e "observeOnly" são sempre permitidas.
+func isInfrastructureAction(actionType string) bool {
+	switch actionType {
+	case "restartPod", "rolloutRestartDeployment":
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.PredictiveIncident, policy *sre.AutoRemediationPolicy, eval IncidentEvaluation) (bool, error) {
 	logger := log.FromContext(ctx).WithValues("component", "incident-action-executor")
-	switch {
-	case policy == nil:
+	if policy == nil {
 		logger.Info("skipping incident actions", "reason", "no_policy")
 		return false, nil
-	case !e.Config.Execution.ExecuteActions:
-		logger.Info("skipping incident actions", "reason", "execute_actions_disabled")
-		return false, nil
-	case eval.ObserveOnly:
+	}
+	if eval.ObserveOnly {
 		logger.Info("skipping incident actions", "reason", "observe_only", "observeOnlyReason", eval.ObserveReason)
 		return false, nil
-	case eval.Approval == nil:
+	}
+	if eval.Approval == nil {
 		logger.Info("skipping incident actions", "reason", "approval_missing")
 		return false, nil
-	case !eval.Approval.Approved:
+	}
+	if !eval.Approval.Approved {
 		logger.Info("skipping incident actions", "reason", "approval_denied", "riskLevel", eval.Approval.RiskLevel, "approvalReasons", eval.Approval.Reasons)
 		return false, nil
 	}
@@ -243,6 +253,12 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 			continue
 		}
 		for _, act := range rule.Actions {
+			// Ações de infraestrutura requerem execute_actions=true
+			if isInfrastructureAction(act.Type) && !e.Config.Execution.ExecuteActions {
+				logger.Info("skipping infrastructure action", "action", act.Type, "reason", "execute_actions_disabled")
+				continue
+			}
+
 			logger.Info("incident action selected", "action", act.Type, "policy", client.ObjectKeyFromObject(policy).String(), "incident", pi.Name)
 			switch act.Type {
 			case "observeOnly":
@@ -250,17 +266,20 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 				pi.Status.BlockedReason = "policy_observe_only"
 				logger.Info("incident action completed", "action", act.Type, "resultPhase", pi.Status.Phase)
 				return true, nil
+
 			case "escalate":
+				// Ação de notificação — sempre permitida independente de execute_actions
 				pi.Status.Phase = sre.PhaseEscalated
 				pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
 					Name:       "escalate",
 					Tool:       "policy_escalate",
-					Args:       map[string]any{"incident": pi.Name},
+					Args:       map[string]any{"incident": pi.Name, "policy": policy.Name},
 					Result:     map[string]any{"phase": string(sre.PhaseEscalated)},
 					ExecutedAt: time.Now().Format(time.RFC3339),
 				})
 				logger.Info("incident action completed", "action", act.Type, "tool", "policy_escalate", "resultPhase", pi.Status.Phase)
 				return true, nil
+
 			case "restartPod":
 				if pi.Spec.Identity.Pod == "" {
 					logger.Info("skipping incident action", "action", act.Type, "reason", "pod_missing")
@@ -278,6 +297,7 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 				pi.Status.Phase = sre.PhaseMitigated
 				logger.Info("incident action completed", "action", act.Type, "tool", "k8s_delete_pod", "namespace", pod.Namespace, "pod", pod.Name, "resultPhase", pi.Status.Phase)
 				return true, nil
+
 			case "rolloutRestartDeployment":
 				if pi.Spec.Identity.Deployment == "" {
 					logger.Info("skipping incident action", "action", act.Type, "reason", "deployment_missing")
@@ -301,6 +321,7 @@ func (e *DefaultIncidentActionExecutor) Execute(ctx context.Context, pi *sre.Pre
 				pi.Status.Phase = sre.PhaseMitigated
 				logger.Info("incident action completed", "action", act.Type, "tool", "k8s_patch_deployment", "namespace", dep.Namespace, "deployment", dep.Name, "resultPhase", pi.Status.Phase)
 				return true, nil
+
 			default:
 				logger.Info("skipping incident action", "action", act.Type, "reason", "unknown_action_type")
 			}
@@ -323,6 +344,11 @@ func (n *DefaultIncidentNotifier) Sync(ctx context.Context, pi *sre.PredictiveIn
 	if err := syncGitHubIssue(ctx, pi, n.GitHub, decision, shouldEscalate); err != nil {
 		logger.Error(err, "github notification sync failed")
 		errs = append(errs, fmt.Errorf("github: %w", err))
+	}
+	// Envia alerta ao Alertmanager assim que o issue GitHub for criado (independente de escalação)
+	if err := syncGitHubIncidentAlert(ctx, pi, n.Alert); err != nil {
+		logger.Error(err, "alertmanager github incident alert failed")
+		errs = append(errs, fmt.Errorf("alertmanager-github: %w", err))
 	}
 	if err := syncEscalationAlert(ctx, pi, n.Alert, decision, shouldEscalate); err != nil {
 		logger.Error(err, "alertmanager escalation notification failed")
@@ -406,6 +432,80 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 		logger.Info("incident action completed", "action", "close-github-issue", "tool", "github_close_issue", "repository", repo, "issueNumber", pi.Status.GitHub.Number)
 	}
 
+	return nil
+}
+
+// syncGitHubIncidentAlert envia um alerta ao Alertmanager sempre que um issue GitHub for criado para o incident.
+// O alerta é enviado uma única vez (idempotente via GitHubAlertSent) e inclui o ID do issue GitHub.
+func syncGitHubIncidentAlert(ctx context.Context, pi *sre.PredictiveIncident, am EscalationAlertClient) error {
+	logger := log.FromContext(ctx).WithValues("component", "github-incident-alert")
+
+	if am == nil || !am.Enabled() {
+		logger.V(1).Info("skipping github incident alert", "reason", "alertmanager_disabled")
+		return nil
+	}
+	if pi.Status.GitHub.Number == 0 {
+		logger.V(1).Info("skipping github incident alert", "reason", "no_github_issue_yet")
+		return nil
+	}
+	if pi.Status.Alerting.GitHubAlertSent {
+		logger.V(1).Info("skipping github incident alert", "reason", "already_sent", "issueNumber", pi.Status.GitHub.Number)
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	alert := alertmanager.Alert{
+		Labels: map[string]string{
+			"alertname":           "MiudinhoAgentIncidentRegistered",
+			"severity":            defaultIfEmpty(strings.ToLower(pi.Spec.Severity), "warning"),
+			"namespace":           pi.Spec.Identity.Namespace,
+			"service":             defaultIfEmpty(pi.Spec.Identity.Service, "unknown"),
+			"source":              string(pi.Spec.Source),
+			"incident_name":       pi.Name,
+			"incident_phase":      string(pi.Status.Phase),
+			"github_issue_number": fmt.Sprintf("%d", pi.Status.GitHub.Number),
+			"github_repository":   pi.Status.GitHub.Repository,
+			"managed_by":          "miudinho-agent",
+		},
+		Annotations: map[string]string{
+			"summary":          fmt.Sprintf("Incident %s registered as GitHub issue #%d", pi.Name, pi.Status.GitHub.Number),
+			"description":      defaultIfEmpty(pi.Spec.Description, pi.Spec.Title),
+			"github_issue_url": pi.Status.GitHub.URL,
+			"fingerprint":      pi.Spec.Fingerprint,
+		},
+		StartsAt:     now,
+		GeneratorURL: pi.Status.GitHub.URL,
+	}
+
+	logger.Info("executing incident action", "action", "send-github-incident-alert",
+		"tool", "alertmanager_send_alert",
+		"issueNumber", pi.Status.GitHub.Number,
+		"issueURL", pi.Status.GitHub.URL,
+	)
+	if err := am.Send(ctx, []alertmanager.Alert{alert}); err != nil {
+		appmetrics.RecordEscalationNotification("alertmanager_github", "error")
+		logger.Error(err, "incident action failed", "action", "send-github-incident-alert",
+			"tool", "alertmanager_send_alert",
+			"issueNumber", pi.Status.GitHub.Number,
+		)
+		return err
+	}
+	appmetrics.RecordEscalationNotification("alertmanager_github", "success")
+
+	pi.Status.Alerting.GitHubAlertSent = true
+	pi.Status.Alerting.GitHubAlertSentAt = now
+	pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
+		Name:       "send-github-incident-alert",
+		Tool:       "alertmanager_send_alert",
+		Args:       map[string]any{"incident": pi.Name, "issueNumber": pi.Status.GitHub.Number},
+		Result:     map[string]any{"sent": true, "issueURL": pi.Status.GitHub.URL},
+		ExecutedAt: now,
+	})
+	logger.Info("incident action completed", "action", "send-github-incident-alert",
+		"tool", "alertmanager_send_alert",
+		"issueNumber", pi.Status.GitHub.Number,
+		"issueURL", pi.Status.GitHub.URL,
+	)
 	return nil
 }
 

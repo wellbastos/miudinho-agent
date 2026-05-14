@@ -141,11 +141,13 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "action_error")
 		logger.Error(actionErr, "incident action execution failed")
 	}
-	if !acted && actionErr == nil && pi.Spec.Source == sre.SourceAlertmanager && pi.Status.Phase == sre.PhaseEnriched {
+	// Se nenhuma ação foi executada e não há erro, bloqueia para escalação.
+	// Aplica a todos os sources (alertmanager, prometheus, predictive) — não apenas alertmanager.
+	if !acted && actionErr == nil && pi.Status.Phase == sre.PhaseEnriched {
 		pi.Status.Phase = sre.PhaseBlocked
 		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_safe_action")
 		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "no policy matched or actions are disabled")
-		logger.Info("incident blocked because no safe action was available", "reason", pi.Status.BlockedReason)
+		logger.Info("incident blocked because no safe action was available", "reason", pi.Status.BlockedReason, "source", source)
 	}
 
 	shouldEscalate := shouldEscalateIssue(pi, eval.Decision, pi.Status.Phase == sre.PhaseEscalated)

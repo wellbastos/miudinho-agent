@@ -46,6 +46,20 @@ func main() {
 		zap.WriteTo(os.Stdout),
 	))
 
+	setupLog := ctrl.Log.WithName("setup")
+	setupLog.Info("starting miudinho-agent",
+		"promUrl", cfg.Observability.PromURL,
+		"alertmanagerApiUrl", cfg.Observability.AlertmanagerAPIURL,
+		"alertmanagerOutboundUrl", cfg.Observability.AlertmanagerOutboundURL,
+		"alertSources", cfg.AlertPolling.Sources,
+		"alertPollInterval", cfg.AlertPolling.Interval,
+		"alertWebhookAddr", cfg.HTTP.AlertWebhookAddr,
+		"llmRoutingMode", cfg.LLM.RoutingMode,
+		"executeActions", cfg.Execution.ExecuteActions,
+		"autoObserveOnly", cfg.Execution.AutoObserveOnly,
+		"leaderElection", cfg.Execution.LeaderElection,
+	)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -56,6 +70,7 @@ func main() {
 		LeaderElectionID:       "miudinho-agent.o11y.io",
 	})
 	if err != nil {
+		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
@@ -66,6 +81,7 @@ func main() {
 		Config:   cfg,
 		Recorder: recorder,
 	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PredictiveIncident")
 		os.Exit(1)
 	}
 	if err := (&controllers.AutoRemediationPolicyReconciler{
@@ -73,6 +89,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: recorder,
 	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AutoRemediationPolicy")
 		os.Exit(1)
 	}
 	if err := (&controllers.SLOPolicyReconciler{
@@ -81,6 +98,7 @@ func main() {
 		Config:   cfg,
 		Recorder: recorder,
 	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SLOPolicy")
 		os.Exit(1)
 	}
 
@@ -90,13 +108,17 @@ func main() {
 	engine := rca.NewEngine(cfg)
 	handler := alertmanager.NewHandler(mgr.GetClient())
 	if err := mgr.Add(alertmanager.NewServer(cfg, handler, engine)); err != nil {
+		setupLog.Error(err, "unable to add alertmanager webhook server")
 		os.Exit(1)
 	}
 	if err := mgr.Add(incidentpoller.New(mgr.GetClient(), cfg)); err != nil {
+		setupLog.Error(err, "unable to add incident poller")
 		os.Exit(1)
 	}
 
+	setupLog.Info("all components registered, starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
 }

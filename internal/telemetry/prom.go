@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,13 +19,24 @@ func NewPromClient(base string) *PromClient {
 }
 
 func (p *PromClient) Query(query string) (map[string]any, error) {
-	u, _ := url.Parse(p.BaseURL)
+	return p.QueryContext(context.Background(), query)
+}
+
+func (p *PromClient) QueryContext(ctx context.Context, query string) (map[string]any, error) {
+	u, err := url.Parse(p.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("prom: invalid base URL: %w", err)
+	}
 	u.Path = "/api/v1/query"
 	q := u.Query()
 	q.Set("query", query)
 	u.RawQuery = q.Encode()
 
-	req, _ := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("prom: build request: %w", err)
+	}
+
 	resp, err := p.http.Do(req)
 	if err != nil {
 		return nil, err

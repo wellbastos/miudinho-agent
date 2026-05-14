@@ -3,9 +3,11 @@ package rca
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/wellbastos/miudinho-agent/internal/config"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 )
 
 type Decision struct {
@@ -156,8 +158,10 @@ func (e *Engine) Approve(ctx context.Context, decision *Decision, extra map[stri
 }
 
 func (e *Engine) analyzeWithOllama(ctx context.Context, input map[string]any) (*Decision, error) {
+	startedAt := time.Now()
 	raw, err := e.Ollama.Decide(ctx, e.SystemPrompt, input)
 	if err != nil {
+		appmetrics.RecordLLMRequest("ollama", "decide", "error", time.Since(startedAt))
 		e.CB.SetOllamaHealth(false)
 		e.CB.SetObserveOnly("ollama decide failed: " + err.Error())
 		return fallbackDecision("ollama_failure", err), err
@@ -165,10 +169,13 @@ func (e *Engine) analyzeWithOllama(ctx context.Context, input map[string]any) (*
 	e.CB.SetOllamaHealth(true)
 
 	var out Decision
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &out); err != nil {
+		appmetrics.RecordLLMRequest("ollama", "decide", "invalid_json", time.Since(startedAt))
 		e.CB.SetObserveOnly("ollama returned invalid json")
 		return fallbackDecision("ollama_invalid_json", err), err
 	}
+	appmetrics.RecordLLMRequest("ollama", "decide", "success", time.Since(startedAt))
+	appmetrics.RecordLLMConfidence("ollama", out.Confidence)
 	if out.Escalation == nil {
 		out.Escalation = map[string]any{"needed": false, "reason": ""}
 	}
@@ -176,8 +183,10 @@ func (e *Engine) analyzeWithOllama(ctx context.Context, input map[string]any) (*
 }
 
 func (e *Engine) analyzeWithGemini(ctx context.Context, input map[string]any) (*Decision, error) {
+	startedAt := time.Now()
 	raw, err := e.Gemini.Decide(ctx, e.SystemPrompt, input)
 	if err != nil {
+		appmetrics.RecordLLMRequest("gemini", "decide", "error", time.Since(startedAt))
 		e.CB.SetGeminiHealth(false)
 		e.CB.SetObserveOnly("gemini decide failed: " + err.Error())
 		return fallbackDecision("gemini_failure", err), err
@@ -185,10 +194,13 @@ func (e *Engine) analyzeWithGemini(ctx context.Context, input map[string]any) (*
 	e.CB.SetGeminiHealth(true)
 
 	var out Decision
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &out); err != nil {
+		appmetrics.RecordLLMRequest("gemini", "decide", "invalid_json", time.Since(startedAt))
 		e.CB.SetObserveOnly("gemini returned invalid json")
 		return fallbackDecision("gemini_invalid_json", err), err
 	}
+	appmetrics.RecordLLMRequest("gemini", "decide", "success", time.Since(startedAt))
+	appmetrics.RecordLLMConfidence("gemini", out.Confidence)
 	if out.Escalation == nil {
 		out.Escalation = map[string]any{"needed": false, "reason": ""}
 	}
@@ -196,9 +208,11 @@ func (e *Engine) analyzeWithGemini(ctx context.Context, input map[string]any) (*
 }
 
 func (e *Engine) approveWithGemini(ctx context.Context, decision *Decision, extra map[string]any) (*Approval, error) {
+	startedAt := time.Now()
 	payload := map[string]any{"decision": decision, "context": extra}
 	raw, err := e.Gemini.Approve(ctx, e.ApproverPrompt, payload)
 	if err != nil {
+		appmetrics.RecordLLMRequest("gemini", "approve", "error", time.Since(startedAt))
 		e.CB.SetGeminiHealth(false)
 		e.CB.SetObserveOnly("gemini approve failed: " + err.Error())
 		return &Approval{Approved: false, RiskLevel: "high", Reasons: []string{"gemini approve failed", err.Error()}, RequiredChanges: []string{"observe-only"}}, err
@@ -206,17 +220,21 @@ func (e *Engine) approveWithGemini(ctx context.Context, decision *Decision, extr
 	e.CB.SetGeminiHealth(true)
 
 	var out Approval
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &out); err != nil {
+		appmetrics.RecordLLMRequest("gemini", "approve", "invalid_json", time.Since(startedAt))
 		e.CB.SetObserveOnly("gemini returned invalid approval json")
 		return &Approval{Approved: false, RiskLevel: "high", Reasons: []string{"gemini invalid approval json"}, RequiredChanges: []string{"observe-only"}}, err
 	}
+	appmetrics.RecordLLMRequest("gemini", "approve", "success", time.Since(startedAt))
 	return &out, nil
 }
 
 func (e *Engine) approveWithOllama(ctx context.Context, decision *Decision, extra map[string]any) (*Approval, error) {
+	startedAt := time.Now()
 	payload := map[string]any{"decision": decision, "context": extra, "instruction": e.ApproverPrompt}
 	raw, err := e.Ollama.Decide(ctx, "", payload)
 	if err != nil {
+		appmetrics.RecordLLMRequest("ollama", "approve", "error", time.Since(startedAt))
 		e.CB.SetOllamaHealth(false)
 		e.CB.SetObserveOnly("ollama approve failed: " + err.Error())
 		return &Approval{Approved: false, RiskLevel: "high", Reasons: []string{"ollama approve failed", err.Error()}, RequiredChanges: []string{"observe-only"}}, err
@@ -224,11 +242,49 @@ func (e *Engine) approveWithOllama(ctx context.Context, decision *Decision, extr
 	e.CB.SetOllamaHealth(true)
 
 	var out Approval
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	if err := json.Unmarshal([]byte(extractJSON(raw)), &out); err != nil {
+		appmetrics.RecordLLMRequest("ollama", "approve", "invalid_json", time.Since(startedAt))
 		e.CB.SetObserveOnly("ollama returned invalid approval json")
 		return &Approval{Approved: false, RiskLevel: "high", Reasons: []string{"ollama invalid approval json"}, RequiredChanges: []string{"observe-only"}}, err
 	}
+	appmetrics.RecordLLMRequest("ollama", "approve", "success", time.Since(startedAt))
 	return &out, nil
+}
+
+// extractJSON remove fences de markdown (```json ... ``` ou ``` ... ```) e
+// extrai o objeto/array JSON mais externo do texto retornado pelo LLM.
+// Isso garante que respostas com prose extra ou code fences ainda sejam parseadas.
+func extractJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+
+	// Remove fences: ```json ... ``` ou ``` ... ```
+	if idx := strings.Index(s, "```"); idx != -1 {
+		// pula a linha da abertura
+		start := strings.Index(s[idx:], "\n")
+		if start != -1 {
+			s = s[idx+start+1:]
+		}
+		// remove a linha do fechamento
+		if end := strings.LastIndex(s, "```"); end != -1 {
+			s = strings.TrimSpace(s[:end])
+		}
+	}
+
+	// Encontra o primeiro { ou [ e o último } ou ] correspondente
+	first := strings.IndexAny(s, "{[")
+	if first == -1 {
+		return raw // nada encontrado, devolve original
+	}
+	open := rune(s[first])
+	close := '}'
+	if open == '[' {
+		close = ']'
+	}
+	last := strings.LastIndexByte(s, byte(close))
+	if last == -1 || last < first {
+		return raw
+	}
+	return strings.TrimSpace(s[first : last+1])
 }
 
 func fallbackDecision(classification string, err error) *Decision {

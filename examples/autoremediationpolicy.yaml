@@ -19,8 +19,8 @@ spec:
     - when:
         source: "alertmanager"
       actions:
-        - type: "observeOnly"
+        - type: "escalate"
     - when:
         source: "predictive"
       actions:
-        - type: "observeOnly"
+        - type: "escalate"

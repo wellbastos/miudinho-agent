@@ -13,6 +13,7 @@ import (
 	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/incidents"
 	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -28,12 +29,19 @@ type Poller struct {
 }
 
 func New(c client.Client, cfg config.AppConfig) *Poller {
+	log := ctrl.Log.WithName("incidentpoller")
 	sources := make([]AlertSource, 0, 2)
 	if sourceEnabled(cfg.AlertPolling.Sources, "prometheus") && strings.TrimSpace(cfg.Observability.PromURL) != "" {
+		log.Info("prometheus polling enabled", "url", cfg.Observability.PromURL)
 		sources = append(sources, NewPrometheusSource(cfg.Observability.PromURL))
+	} else {
+		log.Info("prometheus polling disabled", "sourceInConfig", sourceEnabled(cfg.AlertPolling.Sources, "prometheus"), "promUrl", cfg.Observability.PromURL)
 	}
 	if sourceEnabled(cfg.AlertPolling.Sources, "alertmanager") && strings.TrimSpace(cfg.Observability.AlertmanagerAPIURL) != "" {
+		log.Info("alertmanager polling enabled", "url", cfg.Observability.AlertmanagerAPIURL)
 		sources = append(sources, NewAlertmanagerSource(cfg.Observability.AlertmanagerAPIURL))
+	} else {
+		log.Info("alertmanager polling disabled", "sourceInConfig", sourceEnabled(cfg.AlertPolling.Sources, "alertmanager"), "alertmanagerApiUrl", cfg.Observability.AlertmanagerAPIURL)
 	}
 	return &Poller{
 		client:   c,
@@ -43,21 +51,28 @@ func New(c client.Client, cfg config.AppConfig) *Poller {
 }
 
 func (p *Poller) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("incidentpoller")
 	if len(p.sources) == 0 {
+		log.Info("no alert sources configured, poller is inactive")
 		<-ctx.Done()
 		return nil
 	}
 
+	log.Info("starting alert poller", "sources", len(p.sources), "interval", p.interval)
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
-	_ = p.Sync(ctx)
+	if err := p.Sync(ctx); err != nil {
+		log.Error(err, "initial poll sync failed")
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			_ = p.Sync(ctx)
+			if err := p.Sync(ctx); err != nil {
+				log.Error(err, "poll sync failed")
+			}
 		}
 	}
 }
@@ -67,9 +82,11 @@ func (p *Poller) NeedLeaderElection() bool {
 }
 
 func (p *Poller) Sync(ctx context.Context) error {
+	log := ctrl.Log.WithName("incidentpoller")
 	active := map[string]incidents.ObservedAlert{}
 	deduplicated := 0
 
+	var pollErrors []error
 	for _, source := range p.sources {
 		startedAt := time.Now()
 		alerts, err := source.ListAlerts(ctx)
@@ -77,8 +94,11 @@ func (p *Poller) Sync(ctx context.Context) error {
 		if err != nil {
 			result = "error"
 			appmetrics.RecordAlertPoll(source.Name(), result, time.Since(startedAt), 0)
-			return err
+			log.Error(err, "failed to list alerts from source", "source", source.Name())
+			pollErrors = append(pollErrors, fmt.Errorf("source %s: %w", source.Name(), err))
+			continue
 		}
+		log.Info("polled alerts from source", "source", source.Name(), "count", len(alerts))
 		appmetrics.RecordAlertPoll(source.Name(), result, time.Since(startedAt), len(alerts))
 		for _, alert := range alerts {
 			fp := incidents.CanonicalFingerprint(alert)
@@ -91,29 +111,52 @@ func (p *Poller) Sync(ctx context.Context) error {
 		}
 	}
 
+	if len(pollErrors) == len(p.sources) {
+		return fmt.Errorf("all alert sources failed: %v", pollErrors)
+	}
+
 	appmetrics.RecordAlertDeduplicated(deduplicated)
 
+	created := 0
+	updated := 0
+	upsertErrors := 0
 	for _, alert := range active {
-		_, created, err := incidents.UpsertObservedAlert(ctx, p.client, alert, "poller")
+		_, wasCreated, err := incidents.UpsertObservedAlert(ctx, p.client, alert, "poller")
 		if err != nil {
-			return err
+			upsertErrors++
+			log.Error(err, "failed to upsert incident — skipping this alert",
+				"alertname", alert.Labels["alertname"],
+				"namespace", alert.Labels["namespace"],
+			)
+			appmetrics.RecordPolledIncidentSync("error")
+			continue // Continua processando os outros alertas
 		}
-		if created {
+		if wasCreated {
+			created++
+			log.Info("incident created from poll", "alertname", alert.Labels["alertname"], "namespace", alert.Labels["namespace"], "source", alert.Source)
 			appmetrics.RecordPolledIncidentSync("created")
 		} else {
+			updated++
 			appmetrics.RecordPolledIncidentSync("updated")
 		}
+	}
+
+	if created > 0 || updated > 0 || deduplicated > 0 || upsertErrors > 0 {
+		log.Info("sync complete", "active", len(active), "created", created, "updated", updated, "deduplicated", deduplicated, "errors", upsertErrors)
 	}
 
 	return p.resolveMissing(ctx, active)
 }
 
 func (p *Poller) resolveMissing(ctx context.Context, active map[string]incidents.ObservedAlert) error {
+	log := ctrl.Log.WithName("incidentpoller")
 	var list sre.PredictiveIncidentList
 	if err := p.client.List(ctx, &list); err != nil {
+		log.Error(err, "failed to list predictive incidents for resolve-missing check")
 		return err
 	}
 
+	var resolveErrors int
 	for i := range list.Items {
 		pi := &list.Items[i]
 		if pi.Spec.Source != sre.SourceAlertmanager || !incidents.IsPollerManaged(pi) {
@@ -122,10 +165,17 @@ func (p *Poller) resolveMissing(ctx context.Context, active map[string]incidents
 		if _, ok := active[pi.Spec.Fingerprint]; ok {
 			continue
 		}
+		log.Info("resolving incident no longer in active alerts", "incident", pi.Name, "namespace", pi.Namespace)
 		if err := incidents.ResolveObservedIncident(ctx, p.client, client.ObjectKeyFromObject(pi), "poller"); err != nil {
-			return err
+			resolveErrors++
+			log.Error(err, "failed to resolve incident — skipping", "incident", pi.Name)
+			appmetrics.RecordPolledIncidentSync("error")
+			continue // Continua tentando resolver os outros incidents
 		}
 		appmetrics.RecordPolledIncidentSync("resolved")
+	}
+	if resolveErrors > 0 {
+		log.Info("resolve-missing completed with errors", "errors", resolveErrors)
 	}
 	return nil
 }
@@ -209,19 +259,26 @@ func (s *PrometheusSource) ListAlerts(ctx context.Context) ([]incidents.Observed
 	if s.baseURL == "" {
 		return nil, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.baseURL+"/api/v1/alerts", nil)
+	endpoint := s.baseURL + "/api/v1/alerts"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept", "application/json")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, err
+		// Diagnóstico específico para resposta HTTP/2 em conexão HTTP/1.x
+		// Indica que o endpoint está na porta gRPC (ex: 10901) ao invés da porta HTTP REST (ex: 10902)
+		if strings.Contains(err.Error(), "malformed HTTP response") {
+			return nil, fmt.Errorf("prometheus endpoint %s parece ser gRPC/HTTP2 — verifique se a porta está correta (porta HTTP REST, não gRPC): %w", endpoint, err)
+		}
+		return nil, fmt.Errorf("prometheus request to %s failed: %w", endpoint, err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("prometheus alerts failed: status=%d", resp.StatusCode)
+		return nil, fmt.Errorf("prometheus alerts endpoint %s returned status=%d", endpoint, resp.StatusCode)
 	}
 
 	var payload struct {

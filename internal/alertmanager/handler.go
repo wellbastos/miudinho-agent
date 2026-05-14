@@ -3,12 +3,15 @@ package alertmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/wellbastos/miudinho-agent/internal/incidents"
 	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -46,6 +49,7 @@ func NewHandler(c client.Client) *Handler {
 }
 
 func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
+	log := ctrl.Log.WithName("alertmanager-webhook")
 	startedAt := time.Now()
 	result := "accepted"
 	defer func() {
@@ -61,14 +65,20 @@ func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 	var payload webhookPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		result = "bad_request"
+		log.Error(err, "failed to decode webhook payload", "remoteAddr", r.RemoteAddr)
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
 
+	log.Info("webhook received alerts", "count", len(payload.Alerts), "remoteAddr", r.RemoteAddr)
+
 	var failed []string
 	for _, alert := range payload.Alerts {
 		if err := h.upsertIncident(r.Context(), alert); err != nil {
+			log.Error(err, "failed to upsert incident from webhook", "alertname", alert.Labels["alertname"], "namespace", alert.Labels["namespace"])
 			failed = append(failed, err.Error())
+		} else {
+			log.Info("incident upserted from webhook", "alertname", alert.Labels["alertname"], "namespace", alert.Labels["namespace"], "status", alert.Status)
 		}
 	}
 
@@ -82,6 +92,7 @@ func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleFakeAlert(w http.ResponseWriter, r *http.Request) {
+	log := ctrl.Log.WithName("alertmanager-webhook")
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -99,7 +110,7 @@ func (h *Handler) HandleFakeAlert(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			_ = r.Body.Close()
 		}()
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
@@ -148,7 +159,9 @@ func (h *Handler) HandleFakeAlert(w http.ResponseWriter, r *http.Request) {
 		alert.Labels["github_repository"] = req.GitHubRepository
 	}
 
+	log.Info("fake alert request received", "namespace", req.Namespace, "service", req.Service, "status", req.Status)
 	if err := h.upsertIncident(r.Context(), alert); err != nil {
+		log.Error(err, "failed to upsert fake alert", "namespace", req.Namespace, "service", req.Service)
 		http.Error(w, fmt.Sprintf("failed to create fake alert: %v", err), http.StatusInternalServerError)
 		return
 	}

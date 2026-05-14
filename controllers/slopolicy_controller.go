@@ -10,6 +10,8 @@ import (
 
 	sre "github.com/wellbastos/miudinho-agent/api/v1alpha1"
 	"github.com/wellbastos/miudinho-agent/internal/config"
+	"github.com/wellbastos/miudinho-agent/internal/incidents"
+	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	"github.com/wellbastos/miudinho-agent/internal/telemetry"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type PromQueryAPI interface {
@@ -45,15 +48,36 @@ func (r *SLOPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	startedAt := time.Now()
+	logger := log.FromContext(ctx).WithValues("sloPolicy", req.NamespacedName.String())
+	ctx = log.IntoContext(ctx, logger)
+	result := "success"
+	defer func() {
+		appmetrics.RecordReconcile("slopolicy", "predictive", "slo", result, time.Since(startedAt))
+	}()
+
 	slo := &sre.SLOPolicy{}
 	if err := r.Get(ctx, req.NamespacedName, slo); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if client.IgnoreNotFound(err) == nil {
+			result = "not_found"
+			return ctrl.Result{}, nil
+		}
+		result = "error"
+		return ctrl.Result{}, err
 	}
 
 	interval := time.Duration(slo.Spec.ScheduleSeconds) * time.Second
 	if interval <= 0 {
 		interval = 120 * time.Second
 	}
+
+	logger.Info("reconciling slo policy",
+		"schedule", interval,
+		"objective", slo.Spec.Objective.Target,
+		"window", slo.Spec.Objective.Window,
+		"matchLabels", slo.Spec.Service.MatchLabels,
+		"excludedNamespaces", slo.Spec.ExcludedNamespaces,
+	)
 
 	prom := r.PromAPI
 	if prom == nil {
@@ -62,9 +86,31 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	targets, err := r.discoverTargets(ctx, slo, req.Namespace)
 	if err != nil {
+		result = "error"
+		logger.Error(err, "failed to discover slo targets")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(slo, "Warning", "DiscoveryFailed", "Failed to discover service targets: %v", err)
+		}
 		return ctrl.Result{}, err
 	}
+
+	logger.Info("slo targets discovered", "count", len(targets))
 	if len(targets) == 0 {
+		logger.Info("no slo targets found — verify services have the expected labels or matchLabels configuration",
+			"matchLabels", slo.Spec.Service.MatchLabels,
+			"namespace", slo.Spec.Service.Namespace,
+		)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(slo, "Warning", "NoTargets",
+				"No service targets found. Verify matchLabels %v are applied to services in namespace %q",
+				slo.Spec.Service.MatchLabels, slo.Spec.Service.Namespace)
+		}
+		slo.Status.LastRunTime = time.Now().Format(time.RFC3339)
+		slo.Status.ObservedGeneration = slo.Generation
+		if err := r.Status().Update(ctx, slo); err != nil {
+			result = "error"
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: interval}, nil
 	}
 
@@ -78,6 +124,9 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		min5xx = 0.1
 	}
 
+	incidentsCreated := 0
+	incidentsUpdated := 0
+
 	for _, target := range targets {
 		q5xx := fmt.Sprintf(`sum(rate(http_requests_total{namespace="%s",service="%s",job="%s",status=~"5.."}[5m]))`, target.namespace, target.service, target.job)
 		qtot := fmt.Sprintf(`sum(rate(http_requests_total{namespace="%s",service="%s",job="%s"}[5m]))`, target.namespace, target.service, target.job)
@@ -86,14 +135,23 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		erResp, err := prom.Query(qer)
 		if err != nil {
+			result = "error"
+			logger.Error(err, "prometheus error_rate query failed", "namespace", target.namespace, "service", target.service)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(slo, "Warning", "PrometheusQueryFailed", "Error rate query failed for %s/%s: %v", target.namespace, target.service, err)
+			}
 			return ctrl.Result{}, err
 		}
 		rpsResp, err := prom.Query(q5xx)
 		if err != nil {
+			result = "error"
+			logger.Error(err, "prometheus 5xx_rps query failed", "namespace", target.namespace, "service", target.service)
 			return ctrl.Result{}, err
 		}
 		slopeResp, err := prom.Query(qslope)
 		if err != nil {
+			result = "error"
+			logger.Error(err, "prometheus slope query failed", "namespace", target.namespace, "service", target.service)
 			return ctrl.Result{}, err
 		}
 
@@ -101,17 +159,32 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		rps := promScalar(rpsResp)
 		slope := promScalar(slopeResp)
 
+		logger.V(1).Info("slo signal evaluation",
+			"namespace", target.namespace, "service", target.service,
+			"errorRatePct", er, "5xxRPS", rps, "slope", slope,
+			"thresholds", map[string]float64{"errorRate": erThr, "min5xxRPS": min5xx, "slope": slopeThr},
+		)
+
 		risk := er >= erThr && rps >= min5xx && slope > slopeThr
 		if !risk {
+			logger.V(1).Info("slo target within bounds, no incident needed",
+				"namespace", target.namespace, "service", target.service,
+				"errorRatePct", er, "5xxRPS", rps, "slope", slope,
+			)
 			continue
 		}
+
+		logger.Info("slo risk detected — creating predictive incident",
+			"namespace", target.namespace, "service", target.service,
+			"errorRatePct", er, "5xxRPS", rps, "slope", slope,
+		)
 
 		fp := fingerprint(fmt.Sprintf("slo|%s|%s|%s|%s", target.namespace, target.service, target.job, slo.Name))
 		name := "pi-pred-" + fp[:12]
 
 		labels := map[string]string{
 			"miudinho.o11y.io/source":      "predictive",
-			"miudinho.o11y.io/fingerprint": fp,
+			"miudinho.o11y.io/fingerprint": incidents.LabelSafeFingerprint(fp),
 			"miudinho.o11y.io/policy":      slo.Name,
 			"app.kubernetes.io/name":       target.service,
 		}
@@ -129,8 +202,8 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				Source:      sre.SourcePredictive,
 				Fingerprint: fp,
 				Severity:    "warning",
-				Title:       "Predictive risk detected",
-				Description: "Service shows predictive error trend",
+				Title:       fmt.Sprintf("Predictive SLO risk: %s", target.service),
+				Description: fmt.Sprintf("Service %s/%s shows predictive error trend (er=%.2f%%, rps=%.3f, slope=%.4f)", target.namespace, target.service, er, rps, slope),
 				Identity: sre.IncidentIdentity{
 					Namespace: target.namespace,
 					Service:   target.service,
@@ -147,27 +220,43 @@ func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		current := &sre.PredictiveIncident{}
 		err = r.Get(ctx, client.ObjectKey{Namespace: target.namespace, Name: name}, current)
 		if client.IgnoreNotFound(err) != nil {
+			result = "error"
 			return ctrl.Result{}, err
 		}
 		if err != nil {
 			if err := r.Create(ctx, pi); err != nil {
+				result = "error"
+				logger.Error(err, "failed to create predictive incident", "incident", name)
 				return ctrl.Result{}, err
+			}
+			incidentsCreated++
+			logger.Info("predictive incident created", "incident", name, "namespace", target.namespace, "service", target.service)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(slo, "Normal", "PredictiveIncidentCreated",
+					"Predictive incident %s created for %s/%s (er=%.2f%%, rps=%.3f)", name, target.namespace, target.service, er, rps)
 			}
 		} else {
 			current.Spec = pi.Spec
 			current.Labels = pi.Labels
 			if err := r.Update(ctx, current); err != nil {
+				result = "error"
+				logger.Error(err, "failed to update predictive incident", "incident", name)
 				return ctrl.Result{}, err
 			}
+			incidentsUpdated++
+			logger.V(1).Info("predictive incident updated", "incident", name)
 		}
-		if r.Recorder != nil {
-			r.Recorder.Eventf(slo, "Normal", "PredictiveIncidentCreated", "Predictive incident %s evaluated as risky", name)
-		}
+	}
+
+	if incidentsCreated > 0 || incidentsUpdated > 0 {
+		logger.Info("slo reconcile complete", "targets", len(targets), "incidentsCreated", incidentsCreated, "incidentsUpdated", incidentsUpdated)
 	}
 
 	slo.Status.LastRunTime = time.Now().Format(time.RFC3339)
 	slo.Status.ObservedGeneration = slo.Generation
 	if err := r.Status().Update(ctx, slo); err != nil {
+		result = "error"
+		logger.Error(err, "failed to update slo policy status")
 		return ctrl.Result{}, err
 	}
 

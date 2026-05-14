@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"os"
 	"strconv"
 	"strings"
@@ -8,7 +9,8 @@ import (
 )
 
 type HTTPConfig struct {
-	AlertWebhookAddr string
+	AlertWebhookAddr    string
+	WebhookToken        string
 }
 
 type ObservabilityConfig struct {
@@ -70,9 +72,10 @@ func LoadFromEnv() AppConfig {
 	return AppConfig{
 		HTTP: HTTPConfig{
 			AlertWebhookAddr: getenv("ALERT_WEBHOOK_ADDR", ":8090"),
+			WebhookToken:     strings.TrimSpace(os.Getenv("WEBHOOK_TOKEN")),
 		},
 		Observability: ObservabilityConfig{
-			PromURL:                   getenv("PROM_URL", "http://thanos-query.o11y.svc.cluster.local:10901"),
+			PromURL:                   getenv("PROM_URL", "http://thanos-query.o11y.svc.cluster.local:10902"),
 			TempoURL:                  getenv("TEMPO_URL", "http://tempo.o11y.svc.cluster.local:3100"),
 			TempoPredictivePath:       getenv("TEMPO_PREDICTIVE_PATH", "api/search"),
 			TempoPredictiveQueryParam: getenv("TEMPO_PREDICTIVE_QUERY_PARAM", "q"),
@@ -85,20 +88,20 @@ func LoadFromEnv() AppConfig {
 			OllamaModel:    getenv("OLLAMA_MODEL", "llama3.1:8b"),
 			GeminiBaseURL:  getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com"),
 			GeminiModel:    getenv("GEMINI_MODEL", "gemini-1.5-pro"),
-			GoogleAPIKey:   strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")),
+			GoogleAPIKey:   decodeBase64Env("GOOGLE_API_KEY"),
 			SystemPrompt:   getenv("SYSTEM_PROMPT", defaultSystemPrompt()),
 			ApproverPrompt: getenv("APPROVER_PROMPT", defaultApproverPrompt()),
 		},
 		GitHub: GitHubConfig{
 			APIURL:      getenv("GITHUB_API_URL", "https://api.github.com"),
-			Token:       strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+			Token:       decodeBase64Env("GITHUB_TOKEN"),
 			Owner:       strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
-			RepoPrefix:  getenv("GITHUB_REPOSITORY_PREFIX", "apps-"),
+			RepoPrefix:  getenv("GITHUB_REPOSITORY_PREFIX", ""),
 			ProductName: strings.TrimSpace(os.Getenv("GITHUB_PRODUCT_NAME")),
 			N2Teams:     splitCSV(getenv("GITHUB_N2_TEAMS", "sre-editor,sre-viewer,sre-admin")),
 		},
 		Notifications: NotificationsConfig{
-			GoogleChatIncidentsWebhookURL: strings.TrimSpace(os.Getenv("GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL")),
+			GoogleChatIncidentsWebhookURL: decodeBase64Env("GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL"),
 		},
 		AlertPolling: AlertPollingConfig{
 			Interval: parseDuration(getenv("ALERT_POLL_INTERVAL", "30s"), 30*time.Second),
@@ -118,6 +121,32 @@ func getenv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// decodeBase64Env lê a variável de ambiente e tenta decodificar base64 iterativamente.
+// Repete até 4 vezes enquanto o resultado ainda for base64 válido, parando quando
+// a decodificação falhar (valor final não é base64). Isso suporta valores com
+// múltiplas camadas de encoding (ex: base64 de base64) usados para ofuscação em values.yaml.
+func decodeBase64Env(key string) string {
+	current := strings.TrimSpace(os.Getenv(key))
+	if current == "" {
+		return ""
+	}
+	for i := 0; i < 4; i++ {
+		decoded, err := base64.StdEncoding.DecodeString(current)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(current)
+		}
+		if err != nil || len(decoded) == 0 {
+			break // não é mais base64 — valor atual é o final
+		}
+		next := strings.TrimSpace(string(decoded))
+		if next == "" {
+			break
+		}
+		current = next
+	}
+	return current
 }
 
 func parseSeconds(raw string, fallback time.Duration) time.Duration {

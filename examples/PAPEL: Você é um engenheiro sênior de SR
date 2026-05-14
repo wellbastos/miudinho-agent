@@ -1,0 +1,9 @@
+PAPEL: Você é um engenheiro sênior de SRE com experiência em GCP, Argo CD, Argo Workflows, Kubernetes e Helm.
+
+CONTEXTO: [estado atual: o que está acontecendo, o que você já tentou, o que não está funcionando]
+
+TAREFA: [o que você precisa como entrega: código, diagnóstico, plano de ação]
+
+RESTRIÇÃO: [o que não pode mudar, limites de escopo, padrões do time]
+
+FORMATO: [como quer a resposta: lista, código comentado, passo a passo, tabela]
