@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ type Issue struct {
 	Number  int    `json:"number"`
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
+	Title   string `json:"title"`
 }
 
 func New(cfg config.GitHubConfig) *Client {
@@ -107,9 +109,54 @@ func (c *Client) CloseIssue(ctx context.Context, repo string, number int) error 
 	return c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/%s/issues/%d", c.owner, repo, number), payload, nil)
 }
 
+// UpdateIssue atualiza o corpo (body) de uma issue existente.
+func (c *Client) UpdateIssue(ctx context.Context, repo string, number int, body string) error {
+	payload := map[string]any{"body": body}
+	return c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/%s/issues/%d", c.owner, repo, number), payload, nil)
+}
+
 func (c *Client) AddComment(ctx context.Context, repo string, number int, body string) error {
 	payload := map[string]any{"body": body}
 	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.owner, repo, number), payload, nil)
+}
+
+// FindOpenIssue busca a primeira issue aberta no repositório que tenha o label fpLabel.
+// Retorna nil sem erro quando nenhuma issue é encontrada.
+func (c *Client) FindOpenIssue(ctx context.Context, repo, fpLabel string) (*Issue, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues?labels=%s&state=open&per_page=1",
+		c.owner, repo, url.QueryEscape(fpLabel))
+	var issues []Issue
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &issues); err != nil {
+		return nil, err
+	}
+	if len(issues) == 0 {
+		return nil, nil
+	}
+	return &issues[0], nil
+}
+
+// SearchIssueByTitle usa a GitHub Search API para buscar issues (abertas ou fechadas)
+// pelo título exato. Retorna a issue mais recente encontrada, ou nil.
+// Usado como fallback quando a busca por label não encontra resultado (issues antigas sem label fp-).
+func (c *Client) SearchIssueByTitle(ctx context.Context, repo, title string) (*Issue, error) {
+	q := url.QueryEscape(fmt.Sprintf("repo:%s/%s \"%s\" is:issue", c.owner, repo, title))
+	path := "/search/issues?q=" + q + "&per_page=1&sort=updated&order=desc"
+	var result struct {
+		Items []Issue `json:"items"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+	return &result.Items[0], nil
+}
+
+// ReopenIssue reabre uma issue fechada.
+func (c *Client) ReopenIssue(ctx context.Context, repo string, number int) error {
+	payload := map[string]any{"state": "open"}
+	return c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/repos/%s/%s/issues/%d", c.owner, repo, number), payload, nil)
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, payload any, out any) error {

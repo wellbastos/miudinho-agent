@@ -6,7 +6,7 @@ image:
   pullPolicy: Always
 
 log:
-  level: "info"
+  level: "error"
 
 nameOverride: "miudinho-agent"
 fullnameOverride: "miudinho-agent"
@@ -60,6 +60,10 @@ secret:
   # Configure o Alertmanager para enviar: Authorization: Bearer <token>
   # Se vazio, a autenticação é desabilitada (não recomendado em produção).
   # webhookToken: ""
+  lokiUsername: "COLOQUE_AQUI"
+  lokiPassword: "COLOQUE_AQUI"
+  lokiTenantId: "COLOQUE_AQUI"
+  # lokiToken: # Bearer token (aceita base64)
 
 env:
   alertWebhookAddr: ":8090"
@@ -85,6 +89,8 @@ env:
   autoObserveOnly: "false"
   observeOnlyTtlSeconds: "300"
   executeActions: "true"
+  ignoredNamespaces: "kube-system,kube-node-lease,kube-public"
+  lokiUrl: "http://loki-gateway.o11y.svc.cluster.local"
 
 resources:
   requests:
@@ -105,7 +111,6 @@ securityContext:
 
 networkPolicy:
   enabled: true
-  # Namespaces de onde o Alertmanager pode enviar webhooks
   alertmanagerNamespaces:
     - o11y
 

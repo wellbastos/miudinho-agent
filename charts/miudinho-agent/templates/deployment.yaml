@@ -95,6 +95,33 @@ spec:
               value: {{ .Values.env.observeOnlyTtlSeconds | quote }}
             - name: EXECUTE_ACTIONS
               value: {{ .Values.env.executeActions | quote }}
+            - name: IGNORED_NAMESPACES
+              value: {{ .Values.env.ignoredNamespaces | quote }}
+            - name: LOKI_URL
+              value: {{ .Values.env.lokiUrl | quote }}
+            - name: LOKI_TENANT_ID
+              value: {{ .Values.env.lokiTenantId | quote }}
+            {{- if .Values.secret.lokiUsername }}
+            - name: LOKI_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: LOKI_USERNAME
+            {{- end }}
+            {{- if .Values.secret.lokiPassword }}
+            - name: LOKI_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: LOKI_PASSWORD
+            {{- end }}
+            {{- if .Values.secret.lokiToken }}
+            - name: LOKI_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "miudinho-agent.secretName" . }}
+                  key: LOKI_TOKEN
+            {{- end }}
             {{- if .Values.secret.webhookToken }}
             - name: WEBHOOK_TOKEN
               valueFrom:

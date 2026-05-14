@@ -16,7 +16,8 @@ import (
 )
 
 type Handler struct {
-	client client.Client
+	client    client.Client
+	ignoredNS map[string]bool
 }
 
 type webhookPayload struct {
@@ -44,8 +45,11 @@ type fakeAlertRequest struct {
 	GitHubRepository string `json:"github_repository"`
 }
 
-func NewHandler(c client.Client) *Handler {
-	return &Handler{client: c}
+func NewHandler(c client.Client, ignoredNamespaces []string) *Handler {
+	return &Handler{
+		client:    c,
+		ignoredNS: incidents.IgnoredNamespaceSet(ignoredNamespaces),
+	}
 }
 
 func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +78,14 @@ func (h *Handler) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 
 	var failed []string
 	for _, alert := range payload.Alerts {
+		ns := incidents.AlertNamespace(alert.Labels)
+		if h.ignoredNS[ns] {
+			log.V(1).Info("alert ignored — namespace in ignore list",
+				"alertname", alert.Labels["alertname"],
+				"namespace", ns,
+			)
+			continue
+		}
 		if err := h.upsertIncident(r.Context(), alert); err != nil {
 			log.Error(err, "failed to upsert incident from webhook", "alertname", alert.Labels["alertname"], "namespace", alert.Labels["namespace"])
 			failed = append(failed, err.Error())

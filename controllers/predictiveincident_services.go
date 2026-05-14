@@ -15,6 +15,7 @@ import (
 	appmetrics "github.com/wellbastos/miudinho-agent/internal/metrics"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"github.com/wellbastos/miudinho-agent/internal/telemetry"
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,7 +57,16 @@ type GitHubIssueClient interface {
 	TeamSlugs() []string
 	CreateIssue(ctx context.Context, repo, title, body string, labels []string) (*githubissues.Issue, error)
 	CloseIssue(ctx context.Context, repo string, number int) error
+	ReopenIssue(ctx context.Context, repo string, number int) error
 	AddComment(ctx context.Context, repo string, number int, body string) error
+	// UpdateIssue atualiza o corpo de uma issue existente (usado para refletir RCA melhorado).
+	UpdateIssue(ctx context.Context, repo string, number int, body string) error
+	// FindOpenIssue busca uma issue aberta pelo label fp-{hash}.
+	// Retorna nil, nil quando não há issue aberta.
+	FindOpenIssue(ctx context.Context, repo, fpLabel string) (*githubissues.Issue, error)
+	// SearchIssueByTitle busca issues (abertas ou fechadas) pelo título exato via Search API.
+	// Usado como fallback quando a issue não tem o label fp- (issues antigas).
+	SearchIssueByTitle(ctx context.Context, repo, title string) (*githubissues.Issue, error)
 }
 
 type EscalationAlertClient interface {
@@ -76,6 +86,13 @@ type DefaultIncidentEvidenceCollector struct {
 func (c *DefaultIncidentEvidenceCollector) Collect(ctx context.Context, pi *sre.PredictiveIncident) ([]sre.EvidenceItem, error) {
 	prom := telemetry.NewPromClient(c.Config.Observability.PromURL)
 	tempo := telemetry.NewTempoClient(c.Config.Observability.TempoURL, c.Config.Observability.TempoPredictivePath, c.Config.Observability.TempoPredictiveQueryParam)
+	loki := telemetry.NewLokiClient(
+		c.Config.Observability.LokiURL,
+		c.Config.Observability.LokiUsername,
+		c.Config.Observability.LokiPassword,
+		c.Config.Observability.LokiToken,
+		c.Config.Observability.LokiTenantID,
+	)
 
 	var errs []error
 	promEvidence := map[string]any{}
@@ -99,9 +116,16 @@ func (c *DefaultIncidentEvidenceCollector) Collect(ctx context.Context, pi *sre.
 	}
 
 	tempoEvidence := map[string]any{}
-	if pi.Spec.Identity.Service != "" && pi.Spec.Identity.Namespace != "" {
-		q := fmt.Sprintf(`service.name="%s" AND k8s.namespace.name="%s" AND (status=error OR timeout OR "deadline exceeded")`, pi.Spec.Identity.Service, pi.Spec.Identity.Namespace)
-		if rt, err := tempo.Search(q); err == nil {
+	// Pula a busca no Tempo quando o serviço não foi resolvido — evita queries
+	// com service.name="unknown" que são ruidosas e desperdiçam recursos.
+	resolvedSvc := pi.Spec.Identity.Service
+	if resolvedSvc != "" && resolvedSvc != "unknown" && pi.Spec.Identity.Namespace != "" {
+		q := fmt.Sprintf(`service.name="%s" AND k8s.namespace.name="%s" AND (status=error OR timeout OR "deadline exceeded")`, resolvedSvc, pi.Spec.Identity.Namespace)
+		// Deadline curto para não bloquear o reconciler quando Tempo está lento.
+		tempoCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		rt, err := tempo.SearchContext(tempoCtx, q)
+		cancel()
+		if err == nil {
 			tempoEvidence["search"] = rt
 		} else {
 			errs = append(errs, fmt.Errorf("tempo search: %w", err))
@@ -109,10 +133,40 @@ func (c *DefaultIncidentEvidenceCollector) Collect(ctx context.Context, pi *sre.
 		}
 	}
 
-	return []sre.EvidenceItem{
+	lokiEvidence := map[string]any{}
+	if loki.Enabled() && pi.Spec.Identity.Namespace != "" {
+		svc := incidentService(pi)
+		pod := pi.Spec.Identity.Pod
+		lines, meta, err := loki.QueryServiceLogs(ctx, pi.Spec.Identity.Namespace, svc, pod, 100, alertStartsAt(pi))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("loki query: %w", err))
+			lokiEvidence["error"] = err.Error()
+		} else if len(lines) > 0 {
+			lokiEvidence["lines"] = lines
+			lokiEvidence["count"] = len(lines)
+			if meta != nil {
+				lokiEvidence["query"] = meta["query"]
+				lokiEvidence["selector"] = meta["selector"]
+			}
+		} else {
+			lokiEvidence["lines"] = []string{}
+			lokiEvidence["count"] = 0
+		}
+	}
+
+	items := []sre.EvidenceItem{
 		{Kind: "prometheus", Summary: "Thanos queries for service health", Ref: "PROM_URL", Data: promEvidence},
 		{Kind: "tempo", Summary: "Tempo search hint", Ref: "TEMPO_URL", Data: tempoEvidence},
-	}, errors.Join(errs...)
+	}
+	if loki.Enabled() {
+		items = append(items, sre.EvidenceItem{
+			Kind:    "loki",
+			Summary: fmt.Sprintf("Pod logs (últimas 100 linhas de %s/%s)", pi.Spec.Identity.Namespace, incidentService(pi)),
+			Ref:     "LOKI_URL",
+			Data:    lokiEvidence,
+		})
+	}
+	return items, errors.Join(errs...)
 }
 
 type DefaultIncidentPolicyResolver struct {
@@ -373,25 +427,60 @@ func syncGitHubIssue(ctx context.Context, pi *sre.PredictiveIncident, gh GitHubI
 		repo = pi.Status.GitHub.Repository
 	}
 	if pi.Status.GitHub.Number == 0 {
-		logger.Info("executing incident action", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
-		issue, err := gh.CreateIssue(ctx, repo, buildIssueTitle(pi), buildIssueBody(pi, decision), buildIssueLabels(pi))
-		if err != nil {
-			logger.Error(err, "incident action failed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
-			return err
+		// Antes de criar uma nova issue, verifica se já existe uma issue para o mesmo problema.
+		// Fase 1: busca pelo label fp-{hash} (issues novas com fingerprint)
+		// Fase 2: busca pelo título exato via Search API (issues antigas sem o label)
+		existing := findExistingIssue(ctx, gh, repo, pi, logger)
+
+		if existing != nil {
+			if err := adoptExistingIssue(ctx, gh, repo, pi, existing, decision, logger); err != nil {
+				return err
+			}
+		} else {
+			logger.Info("executing incident action", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
+			issue, err := gh.CreateIssue(ctx, repo, buildIssueTitle(pi), buildIssueBody(pi, decision), buildIssueLabels(pi))
+			if err != nil {
+				logger.Error(err, "incident action failed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo)
+				return err
+			}
+			pi.Status.GitHub.Repository = repo
+			pi.Status.GitHub.Number = issue.Number
+			pi.Status.GitHub.URL = issue.HTMLURL
+			pi.Status.GitHub.State = issue.State
+			pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
+			pi.Status.GitHub.LastRCAClassification = pi.Status.RCA.Classification
+			pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
+				Name:       "open-github-issue",
+				Tool:       "github_create_issue",
+				Args:       map[string]any{"repository": repo},
+				Result:     map[string]any{"number": issue.Number, "url": issue.HTMLURL},
+				ExecutedAt: time.Now().Format(time.RFC3339),
+			})
+			logger.Info("incident action completed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo, "issueNumber", issue.Number, "url", issue.HTMLURL)
 		}
-		pi.Status.GitHub.Repository = repo
-		pi.Status.GitHub.Number = issue.Number
-		pi.Status.GitHub.URL = issue.HTMLURL
-		pi.Status.GitHub.State = issue.State
-		pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
-		pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
-			Name:       "open-github-issue",
-			Tool:       "github_create_issue",
-			Args:       map[string]any{"repository": repo},
-			Result:     map[string]any{"number": issue.Number, "url": issue.HTMLURL},
-			ExecutedAt: time.Now().Format(time.RFC3339),
-		})
-		logger.Info("incident action completed", "action", "open-github-issue", "tool", "github_create_issue", "repository", repo, "issueNumber", issue.Number, "url", issue.HTMLURL)
+	}
+
+	// Se o RCA melhorou desde a última vez que o body da issue foi escrito, atualiza o body
+	// para refletir a análise mais recente (ex: investigation → cpu_pressure com logs do Loki).
+	rcaImproved := pi.Status.GitHub.Number > 0 &&
+		pi.Status.RCA.Classification != "" &&
+		pi.Status.RCA.Classification != pi.Status.GitHub.LastRCAClassification
+	if rcaImproved {
+		logger.Info("executing incident action", "action", "update-github-issue-body", "tool", "github_update_issue",
+			"repository", repo, "issueNumber", pi.Status.GitHub.Number,
+			"previousClassification", pi.Status.GitHub.LastRCAClassification,
+			"newClassification", pi.Status.RCA.Classification,
+		)
+		if err := gh.UpdateIssue(ctx, repo, pi.Status.GitHub.Number, buildIssueBody(pi, decision)); err != nil {
+			logger.Error(err, "incident action failed", "action", "update-github-issue-body", "tool", "github_update_issue",
+				"repository", repo, "issueNumber", pi.Status.GitHub.Number)
+		} else {
+			pi.Status.GitHub.LastRCAClassification = pi.Status.RCA.Classification
+			pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
+			logger.Info("incident action completed", "action", "update-github-issue-body", "tool", "github_update_issue",
+				"repository", repo, "issueNumber", pi.Status.GitHub.Number,
+				"classification", pi.Status.RCA.Classification)
+		}
 	}
 
 	if shouldEscalate && !pi.Status.GitHub.Escalated && pi.Status.GitHub.Number > 0 {
@@ -587,6 +676,93 @@ func syncGoogleChatEscalation(ctx context.Context, pi *sre.PredictiveIncident, g
 	return nil
 }
 
+// findExistingIssue procura uma issue existente para o mesmo problema em duas fases:
+// 1. Por label fp-{12chars} (issues novas com fingerprint)
+// 2. Por título exato via Search API (fallback para issues antigas sem o label)
+func findExistingIssue(ctx context.Context, gh GitHubIssueClient, repo string, pi *sre.PredictiveIncident, logger logr.Logger) *githubissues.Issue {
+	// Fase 1: busca por label de fingerprint (O(1), sem rate limit especial)
+	if fpLabel := issueFingerprintLabel(pi); fpLabel != "" {
+		existing, err := gh.FindOpenIssue(ctx, repo, fpLabel)
+		if err != nil {
+			logger.V(1).Info("label search failed — trying title search", "error", err, "fpLabel", fpLabel)
+		} else if existing != nil {
+			logger.Info("found existing issue by fingerprint label", "issueNumber", existing.Number, "state", existing.State, "fpLabel", fpLabel)
+			return existing
+		}
+	}
+
+	// Fase 2: busca por título exato (cobre issues sem o label fp- — criadas antes do sistema de fingerprint)
+	title := buildIssueTitle(pi)
+	existing, err := gh.SearchIssueByTitle(ctx, repo, title)
+	if err != nil {
+		logger.V(1).Info("title search failed", "error", err, "title", title)
+		return nil
+	}
+	if existing != nil {
+		logger.Info("found existing issue by title", "issueNumber", existing.Number, "state", existing.State, "title", title)
+	}
+	return existing
+}
+
+// adoptExistingIssue adota uma issue existente para o incident:
+//   - Atualiza o status do incident com os dados da issue
+//   - Reabre a issue se estiver fechada (problema recorreu)
+//   - Adiciona um comentário de recorrência
+func adoptExistingIssue(ctx context.Context, gh GitHubIssueClient, repo string, pi *sre.PredictiveIncident, issue *githubissues.Issue, decision *rca.Decision, logger logr.Logger) error {
+	pi.Status.GitHub.Repository = repo
+	pi.Status.GitHub.Number = issue.Number
+	pi.Status.GitHub.URL = issue.HTMLURL
+	pi.Status.GitHub.State = issue.State
+	pi.Status.GitHub.LastSyncTime = time.Now().Format(time.RFC3339)
+	pi.Status.Actions = append(pi.Status.Actions, sre.ActionStatus{
+		Name:       "adopt-github-issue",
+		Tool:       "github_find_issue",
+		Args:       map[string]any{"repository": repo},
+		Result:     map[string]any{"number": issue.Number, "url": issue.HTMLURL, "state": issue.State},
+		ExecutedAt: time.Now().Format(time.RFC3339),
+	})
+	logger.Info("adopting existing github issue", "issueNumber", issue.Number, "state", issue.State, "url", issue.HTMLURL)
+
+	// Reabre a issue se estiver fechada — o problema recorreu
+	if strings.EqualFold(issue.State, "closed") {
+		logger.Info("reopening closed github issue — incident recurred", "issueNumber", issue.Number)
+		if err := gh.ReopenIssue(ctx, repo, issue.Number); err != nil {
+			logger.Error(err, "failed to reopen github issue", "issueNumber", issue.Number)
+			// Não retorna erro — continua para adicionar comentário mesmo assim
+		} else {
+			pi.Status.GitHub.State = "open"
+		}
+	}
+
+	// Adiciona comentário de recorrência
+	comment := buildRecurrenceComment(pi, decision)
+	if err := gh.AddComment(ctx, repo, issue.Number, comment); err != nil {
+		logger.Error(err, "failed to add recurrence comment to github issue", "issueNumber", issue.Number)
+		// Não retorna erro — issue já foi adotada com sucesso
+	}
+	return nil
+}
+
+// buildRecurrenceComment monta o comentário adicionado na issue quando um incident recorre.
+func buildRecurrenceComment(pi *sre.PredictiveIncident, decision *rca.Decision) string {
+	lines := []string{
+		"## 🔄 Recorrência detectada",
+		"",
+		fmt.Sprintf("O incident `%s` foi detectado novamente.", pi.Name),
+		"",
+		"### Contexto",
+		fmt.Sprintf("- **Namespace**: `%s`", pi.Spec.Identity.Namespace),
+		fmt.Sprintf("- **Serviço**: `%s`", pi.Spec.Identity.Service),
+		fmt.Sprintf("- **Severidade**: `%s`", defaultIfEmpty(pi.Spec.Severity, "unknown")),
+		fmt.Sprintf("- **Fingerprint**: `%s`", pi.Spec.Fingerprint),
+		fmt.Sprintf("- **Data**: `%s`", time.Now().UTC().Format(time.RFC3339)),
+	}
+	if decision != nil && decision.Summary != "" {
+		lines = append(lines, "", "### RCA", decision.Summary)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func issueRepositoryForIncident(pi *sre.PredictiveIncident, gh GitHubIssueClient) string {
 	if repo := strings.TrimSpace(githubRepositoryLabel(pi)); repo != "" {
 		return repo
@@ -636,4 +812,34 @@ func buildGoogleChatEscalationMessage(pi *sre.PredictiveIncident, decision *rca.
 
 func NewGoogleChatClient(cfg config.NotificationsConfig) GoogleChatClient {
 	return googlechat.New(cfg)
+}
+
+// alertStartsAt extrai o timestamp startsAt do alerta armazenado em spec.alert["startsAt"].
+// Retorna zero time se não encontrado ou não parseável.
+func alertStartsAt(pi *sre.PredictiveIncident) time.Time {
+	if pi.Spec.Alert == nil {
+		return time.Time{}
+	}
+	raw, ok := pi.Spec.Alert["startsAt"].(string)
+	if !ok || raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// lokiEvidenceEmpty retorna true quando Loki está presente na lista de evidências
+// mas não retornou nenhuma linha de log (count == 0). Retorna false se Loki não está
+// na lista (desabilitado) ou se há linhas.
+func lokiEvidenceEmpty(evidence []sre.EvidenceItem) bool {
+	for _, item := range evidence {
+		if item.Kind == "loki" {
+			count, _ := item.Data["count"].(int)
+			return count == 0
+		}
+	}
+	return false
 }

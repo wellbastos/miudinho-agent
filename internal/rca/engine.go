@@ -21,6 +21,83 @@ type Decision struct {
 	Escalation     map[string]any `json:"escalation"`
 }
 
+// UnmarshalJSON implementa um parser tolerante a falhas para a resposta do LLM.
+// O Gemini ocasionalmente retorna campos como objetos em vez de strings simples
+// (ex: `classification: {"category": "oom_kill"}` em vez de `classification: "oom_kill"`).
+// Este método normaliza esses casos sem falhar.
+func (d *Decision) UnmarshalJSON(b []byte) error {
+	type raw struct {
+		Classification json.RawMessage `json:"classification"`
+		Confidence     json.RawMessage `json:"confidence"`
+		Summary        json.RawMessage `json:"summary"`
+		Evidence       json.RawMessage `json:"evidence"`
+		PromQueries    json.RawMessage `json:"prom_queries"`
+		Actions        json.RawMessage `json:"actions"`
+		Rollback       json.RawMessage `json:"rollback_or_next_steps"`
+		Escalation     json.RawMessage `json:"escalation"`
+	}
+	var r raw
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+
+	d.Classification = flexString(r.Classification, "unknown")
+	d.Summary = flexString(r.Summary, "")
+
+	if len(r.Confidence) > 0 {
+		_ = json.Unmarshal(r.Confidence, &d.Confidence)
+	}
+	if len(r.Evidence) > 0 {
+		_ = json.Unmarshal(r.Evidence, &d.Evidence)
+	}
+	if len(r.PromQueries) > 0 {
+		_ = json.Unmarshal(r.PromQueries, &d.PromQueries)
+	}
+	if len(r.Actions) > 0 {
+		_ = json.Unmarshal(r.Actions, &d.Actions)
+	}
+	if len(r.Rollback) > 0 {
+		_ = json.Unmarshal(r.Rollback, &d.Rollback)
+	}
+	if len(r.Escalation) > 0 {
+		_ = json.Unmarshal(r.Escalation, &d.Escalation)
+	}
+	return nil
+}
+
+// flexString extrai um valor string de um json.RawMessage mesmo quando o LLM
+// retornou um objeto em vez de uma string simples.
+// Prioridade: string literal → campo "type"/"category"/"name"/"value" → primeira string encontrada.
+func flexString(raw json.RawMessage, fallback string) string {
+	if len(raw) == 0 {
+		return fallback
+	}
+	// Caso 1: já é uma string JSON
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s != "" {
+			return s
+		}
+		return fallback
+	}
+	// Caso 2: é um objeto — tenta extrair campo semântico preferencial
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err == nil {
+		for _, key := range []string{"type", "category", "name", "value", "label", "classification"} {
+			if v, ok := m[key].(string); ok && v != "" {
+				return v
+			}
+		}
+		// Retorna a primeira string encontrada
+		for _, v := range m {
+			if sv, ok := v.(string); ok && sv != "" {
+				return sv
+			}
+		}
+	}
+	return fallback
+}
+
 type Action struct {
 	Tool   string         `json:"tool"`
 	Args   map[string]any `json:"args"`

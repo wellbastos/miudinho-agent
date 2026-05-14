@@ -20,6 +20,11 @@ type ObservabilityConfig struct {
 	TempoPredictiveQueryParam string
 	AlertmanagerOutboundURL   string
 	AlertmanagerAPIURL        string
+	LokiURL                   string
+	LokiUsername              string
+	LokiPassword              string
+	LokiToken                 string
+	LokiTenantID              string
 }
 
 type LLMConfig struct {
@@ -47,8 +52,9 @@ type NotificationsConfig struct {
 }
 
 type AlertPollingConfig struct {
-	Interval time.Duration
-	Sources  []string
+	Interval          time.Duration
+	Sources           []string
+	IgnoredNamespaces []string
 }
 
 type ExecutionConfig struct {
@@ -81,6 +87,11 @@ func LoadFromEnv() AppConfig {
 			TempoPredictiveQueryParam: getenv("TEMPO_PREDICTIVE_QUERY_PARAM", "q"),
 			AlertmanagerOutboundURL:   strings.TrimSpace(os.Getenv("ALERTMANAGER_OUTBOUND_URL")),
 			AlertmanagerAPIURL:        strings.TrimSpace(os.Getenv("ALERTMANAGER_API_URL")),
+			LokiURL:                   strings.TrimSpace(os.Getenv("LOKI_URL")),
+			LokiUsername:              strings.TrimSpace(os.Getenv("LOKI_USERNAME")),
+			LokiPassword:              decodeBase64Env("LOKI_PASSWORD"),
+			LokiToken:                 decodeBase64Env("LOKI_TOKEN"),
+			LokiTenantID:              strings.TrimSpace(os.Getenv("LOKI_TENANT_ID")),
 		},
 		LLM: LLMConfig{
 			RoutingMode:    getenv("LLM_ROUTING_MODE", "ollama_only"),
@@ -104,8 +115,9 @@ func LoadFromEnv() AppConfig {
 			GoogleChatIncidentsWebhookURL: decodeBase64Env("GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL"),
 		},
 		AlertPolling: AlertPollingConfig{
-			Interval: parseDuration(getenv("ALERT_POLL_INTERVAL", "30s"), 30*time.Second),
-			Sources:  splitCSV(getenv("ALERT_SOURCES_ENABLED", "prometheus,alertmanager")),
+			Interval:          parseDuration(getenv("ALERT_POLL_INTERVAL", "30s"), 30*time.Second),
+			Sources:           splitCSV(getenv("ALERT_SOURCES_ENABLED", "prometheus,alertmanager")),
+			IgnoredNamespaces: splitCSV(getenv("IGNORED_NAMESPACES", "kube-system,kube-node-lease,kube-public")),
 		},
 		Execution: ExecutionConfig{
 			ExecuteActions:  os.Getenv("EXECUTE_ACTIONS") == "true",

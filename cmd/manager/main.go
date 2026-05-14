@@ -9,6 +9,7 @@ import (
 	"github.com/wellbastos/miudinho-agent/internal/alertmanager"
 	"github.com/wellbastos/miudinho-agent/internal/config"
 	"github.com/wellbastos/miudinho-agent/internal/incidentpoller"
+	"github.com/wellbastos/miudinho-agent/internal/incidents"
 	"github.com/wellbastos/miudinho-agent/internal/rca"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -60,7 +61,14 @@ func main() {
 		"leaderElection", cfg.Execution.LeaderElection,
 	)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// O rate limiter padrão do client-go (QPS=5, Burst=10) throttlea API calls
+	// quando há muitos PredictiveIncidents em reconciliação simultânea, causando
+	// "context canceled" enquanto aguarda um token.
+	restCfg := ctrl.GetConfigOrDie()
+	restCfg.QPS = 100
+	restCfg.Burst = 200
+
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
@@ -76,10 +84,11 @@ func main() {
 
 	recorder := mgr.GetEventRecorderFor("miudinho-agent")
 	if err := (&controllers.PredictiveIncidentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Config:   cfg,
-		Recorder: recorder,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Config:    cfg,
+		Recorder:  recorder,
+		IgnoredNS: incidents.IgnoredNamespaceSet(cfg.AlertPolling.IgnoredNamespaces),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PredictiveIncident")
 		os.Exit(1)
@@ -106,7 +115,7 @@ func main() {
 	_ = mgr.AddReadyzCheck("readyz", healthz.Ping)
 
 	engine := rca.NewEngine(cfg)
-	handler := alertmanager.NewHandler(mgr.GetClient())
+	handler := alertmanager.NewHandler(mgr.GetClient(), cfg.AlertPolling.IgnoredNamespaces)
 	if err := mgr.Add(alertmanager.NewServer(cfg, handler, engine)); err != nil {
 		setupLog.Error(err, "unable to add alertmanager webhook server")
 		os.Exit(1)

@@ -146,7 +146,8 @@ func TestPredictiveIncidentReconcileEscalatesAlertmanagerWithoutSafeAction(t *te
 			Execution: config.ExecutionConfig{ExecuteActions: false},
 		},
 		Evidence: stubEvidenceCollector{},
-		Policies: stubPolicyResolver{},
+		// Política configurada mas execute_actions=false → razão deve ser "actions_disabled"
+		Policies: stubPolicyResolver{policy: &sre.AutoRemediationPolicy{}},
 		DecisionSvc: stubDecisionService{
 			eval: IncidentEvaluation{
 				Decision: &rca.Decision{Classification: "http-5xx", Confidence: 0.95, Summary: "restart candidate"},
@@ -168,8 +169,8 @@ func TestPredictiveIncidentReconcileEscalatesAlertmanagerWithoutSafeAction(t *te
 	if got.Status.Phase != sre.PhaseBlocked {
 		t.Fatalf("expected blocked phase, got %s", got.Status.Phase)
 	}
-	if got.Status.BlockedReason != "no_safe_action" {
-		t.Fatalf("expected no_safe_action reason, got %q", got.Status.BlockedReason)
+	if got.Status.BlockedReason != "actions_disabled" {
+		t.Fatalf("expected actions_disabled reason, got %q", got.Status.BlockedReason)
 	}
 }
 
@@ -419,6 +420,18 @@ func (*githubErrorClient) AddComment(context.Context, string, int, string) error
 func (*githubErrorClient) CloseIssue(context.Context, string, int) error {
 	return errors.New("close failed")
 }
+func (*githubErrorClient) ReopenIssue(context.Context, string, int) error {
+	return errors.New("reopen failed")
+}
+func (*githubErrorClient) UpdateIssue(context.Context, string, int, string) error {
+	return errors.New("update failed")
+}
+func (*githubErrorClient) FindOpenIssue(context.Context, string, string) (*githubissues.Issue, error) {
+	return nil, errors.New("find failed")
+}
+func (*githubErrorClient) SearchIssueByTitle(context.Context, string, string) (*githubissues.Issue, error) {
+	return nil, errors.New("search failed")
+}
 func (*githubErrorClient) TeamSlugs() []string    { return []string{"sre"} }
 func (*githubErrorClient) TeamMentions() []string { return []string{"@org/sre"} }
 
@@ -455,6 +468,14 @@ func (*githubSuccessClient) CreateIssue(context.Context, string, string, string,
 }
 func (*githubSuccessClient) AddComment(context.Context, string, int, string) error { return nil }
 func (*githubSuccessClient) CloseIssue(context.Context, string, int) error         { return nil }
+func (*githubSuccessClient) ReopenIssue(context.Context, string, int) error        { return nil }
+func (*githubSuccessClient) UpdateIssue(context.Context, string, int, string) error { return nil }
+func (*githubSuccessClient) FindOpenIssue(context.Context, string, string) (*githubissues.Issue, error) {
+	return nil, nil
+}
+func (*githubSuccessClient) SearchIssueByTitle(context.Context, string, string) (*githubissues.Issue, error) {
+	return nil, nil
+}
 func (*githubSuccessClient) TeamSlugs() []string {
 	return []string{"sre-editor", "sre-viewer", "sre-admin"}
 }

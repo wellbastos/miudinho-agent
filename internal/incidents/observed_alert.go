@@ -40,26 +40,43 @@ func LabelSafeFingerprint(fp string) string {
 // labelSafeFingerprint é o alias interno para uso dentro do pacote.
 func labelSafeFingerprint(fp string) string { return LabelSafeFingerprint(fp) }
 
+// volatileLabels são campos que mudam quando um pod é reiniciado ou um replicaset
+// é rotacionado — não devem fazer parte da identidade do problema.
+var volatileLabels = map[string]bool{
+	"pod":         true,
+	"pod_name":    true,
+	"replicaset":  true,
+	"replica_set": true,
+}
+
+// CanonicalFingerprint calcula um fingerprint estável baseado na *identidade do problema*,
+// não na instância do alerta. Campos efêmeros como pod e replicaset são excluídos
+// intencionalmente: se o pod é reiniciado (novo nome), o problema é o mesmo.
+// O fingerprint do Alertmanager (que inclui todos os labels, inclusive pod) é ignorado.
 func CanonicalFingerprint(alert ObservedAlert) string {
-	fp := strings.TrimSpace(alert.Fingerprint)
-	if fp != "" {
-		return fp
-	}
 	base := strings.Join([]string{
 		alert.Labels["alertname"],
 		firstNonEmpty(alert.Labels["namespace"], alert.Labels["kubernetes_namespace"], alert.Labels["k8s.namespace.name"]),
-		firstNonEmpty(alert.Labels["service"], alert.Labels["app"], alert.Labels["job"]),
-		alert.Labels["job"],
-		firstNonEmpty(alert.Labels["pod"], alert.Labels["pod_name"]),
-		firstNonEmpty(alert.Labels["deployment"], alert.Labels["app_kubernetes_io_name"]),
+		firstNonEmpty(
+			alert.Labels["service"],
+			alert.Labels["app"],
+			alert.Labels["app_kubernetes_io_name"],
+			alert.Labels["kubernetes_name"],
+			alert.Labels["deployment"],
+			alert.Labels["statefulset"],
+			alert.Labels["daemonset"],
+		),
+		firstNonEmpty(alert.Labels["deployment"], alert.Labels["app_kubernetes_io_name"], alert.Labels["kubernetes_name"]),
 	}, "|")
 
 	// Quando os campos canônicos estão todos vazios, usa todos os labels disponíveis
-	// ordenados como fallback estável (evita criar incidents duplicados por timestamp).
+	// exceto os voláteis — evita criar incidents duplicados por rotação de pods.
 	if strings.Trim(base, "|") == "" {
 		keys := make([]string, 0, len(alert.Labels))
 		for k := range alert.Labels {
-			keys = append(keys, k)
+			if !volatileLabels[k] {
+				keys = append(keys, k)
+			}
 		}
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
@@ -88,6 +105,11 @@ func IncidentNameForFingerprint(fp string) string {
 }
 
 func UpsertObservedAlert(ctx context.Context, c client.Client, alert ObservedAlert, managedBy string) (client.ObjectKey, bool, error) {
+	return UpsertObservedAlertWithIgnore(ctx, c, alert, managedBy, nil)
+}
+
+// UpsertObservedAlertWithIgnore é como UpsertObservedAlert mas ignora namespaces na lista.
+func UpsertObservedAlertWithIgnore(ctx context.Context, c client.Client, alert ObservedAlert, managedBy string, ignoredNS map[string]bool) (client.ObjectKey, bool, error) {
 	if c == nil {
 		return client.ObjectKey{}, false, fmt.Errorf("kubernetes client is not configured")
 	}
@@ -98,13 +120,32 @@ func UpsertObservedAlert(ctx context.Context, c client.Client, alert ObservedAle
 		alert.Labels["k8s.namespace.name"],
 		"default",
 	)
-	service := firstNonEmpty(alert.Labels["service"], alert.Labels["app"], alert.Labels["job"])
+
+	// Bloqueia criação de incidents para namespaces na lista de ignorados.
+	if len(ignoredNS) > 0 && ignoredNS[ns] {
+		return client.ObjectKey{}, false, nil
+	}
+
+	// Tenta extrair o nome do serviço/workload em ordem de especificidade.
+	// Alertas do kube-state-metrics e do Prometheus Operator usam labels diferentes
+	// dependendo do tipo de workload monitorado.
+	service := firstNonEmpty(
+		alert.Labels["service"],
+		alert.Labels["app"],
+		alert.Labels["app_kubernetes_io_name"],
+		alert.Labels["kubernetes_name"],
+		alert.Labels["deployment"],
+		alert.Labels["statefulset"],
+		alert.Labels["daemonset"],
+		alert.Labels["container"],
+		alert.Labels["job"],
+	)
 	job := alert.Labels["job"]
 	if job == "" {
 		job = service
 	}
 	pod := firstNonEmpty(alert.Labels["pod"], alert.Labels["pod_name"])
-	deployment := firstNonEmpty(alert.Labels["deployment"], alert.Labels["app_kubernetes_io_name"])
+	deployment := firstNonEmpty(alert.Labels["deployment"], alert.Labels["app_kubernetes_io_name"], alert.Labels["kubernetes_name"])
 	fp := CanonicalFingerprint(alert)
 	name := IncidentNameForFingerprint(fp)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -276,4 +317,34 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// AlertNamespace extrai o namespace de um mapa de labels de alerta,
+// respeitando os aliases usados por diferentes stacks de observabilidade.
+func AlertNamespace(labels map[string]string) string {
+	return firstNonEmpty(
+		labels["namespace"],
+		labels["kubernetes_namespace"],
+		labels["k8s.namespace.name"],
+	)
+}
+
+// IgnoredNamespaceSet converte uma lista de namespaces em um set para lookup O(1).
+func IgnoredNamespaceSet(namespaces []string) map[string]bool {
+	set := make(map[string]bool, len(namespaces))
+	for _, ns := range namespaces {
+		ns = strings.TrimSpace(ns)
+		if ns != "" {
+			set[ns] = true
+		}
+	}
+	return set
+}
+
+// IsIgnoredAlert retorna true se o alerta pertence a um namespace que deve ser ignorado.
+func IsIgnoredAlert(labels map[string]string, ignoredNS map[string]bool) bool {
+	if len(ignoredNS) == 0 {
+		return false
+	}
+	return ignoredNS[AlertNamespace(labels)]
 }

@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -30,6 +31,7 @@ type PredictiveIncidentReconciler struct {
 	DecisionSvc IncidentDecisionService
 	Actions     IncidentActionExecutor
 	Notifier    IncidentNotifier
+	IgnoredNS   map[string]bool
 }
 
 type githubissuesCommenter interface {
@@ -39,6 +41,11 @@ type githubissuesCommenter interface {
 func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&sre.PredictiveIncident{}).
+		WithOptions(controller.Options{
+			// Permite múltiplas reconciliações em paralelo, reduzindo a profundidade
+			// da fila e evitando "context canceled" no rate limiter do cliente Kubernetes.
+			MaxConcurrentReconciles: 5,
+		}).
 		Complete(r)
 }
 
@@ -67,6 +74,18 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		result = "error"
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	// Namespace ignorado: remove o PredictiveIncident e interrompe a reconciliação.
+	if len(r.IgnoredNS) > 0 && r.IgnoredNS[pi.Namespace] {
+		logger.Info("deleting incident from ignored namespace", "namespace", pi.Namespace, "name", pi.Name)
+		if err := r.Delete(ctx, pi); client.IgnoreNotFound(err) != nil {
+			result = "error"
+			return ctrl.Result{}, err
+		}
+		result = "ignored_namespace"
+		return ctrl.Result{}, nil
+	}
+
 	source = string(pi.Spec.Source)
 	logger.Info("reconciling predictive incident", "source", source, "phase", pi.Status.Phase, "severity", pi.Spec.Severity)
 
@@ -77,9 +96,23 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	previousActionCount := len(pi.Status.Actions)
 	previousBlockedDetails := pi.Status.BlockedDetails
 
+	previousEvidence := pi.Status.Evidence
 	evidence, evidenceErr := r.Evidence.Collect(ctx, pi)
 	if len(evidence) > 0 {
 		pi.Status.Evidence = evidence
+	}
+
+	// Se Loki está habilitado mas ainda não retornou logs e é a primeira coleta de evidências
+	// (nenhuma evidência prévia armazenada), adiar o RCA 90 segundos para permitir
+	// que o agente de log ingira os dados do incidente antes de gerar a análise.
+	if len(previousEvidence) == 0 && lokiEvidenceEmpty(evidence) && pi.Status.RCA.Classification == "" {
+		logger.Info("loki evidence pending on first collection, deferring rca", "requeueAfter", "90s")
+		if err := r.Status().Update(ctx, pi); err != nil {
+			result = "error"
+			return ctrl.Result{}, err
+		}
+		phase = string(pi.Status.Phase)
+		return ctrl.Result{RequeueAfter: 90 * time.Second}, nil
 	}
 
 	policy, err := r.Policies.Resolve(ctx, pi)
@@ -145,9 +178,18 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Aplica a todos os sources (alertmanager, prometheus, predictive) — não apenas alertmanager.
 	if !acted && actionErr == nil && pi.Status.Phase == sre.PhaseEnriched {
 		pi.Status.Phase = sre.PhaseBlocked
-		pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_safe_action")
-		pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "no policy matched or actions are disabled")
-		logger.Info("incident blocked because no safe action was available", "reason", pi.Status.BlockedReason, "source", source)
+		switch {
+		case policy == nil:
+			pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_policy_configured")
+			pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "nenhuma AutoRemediationPolicy configurada — escalando para humanos")
+		case !r.Config.Execution.ExecuteActions:
+			pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "actions_disabled")
+			pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "execute_actions=false — escalando para humanos")
+		default:
+			pi.Status.BlockedReason = defaultIfEmpty(pi.Status.BlockedReason, "no_safe_action")
+			pi.Status.BlockedDetails = appendStatusDetail(pi.Status.BlockedDetails, "policy configurada mas nenhuma ação segura disponível para este incident")
+		}
+		logger.Info("incident blocked, escalating to humans", "reason", pi.Status.BlockedReason, "source", source)
 	}
 
 	shouldEscalate := shouldEscalateIssue(pi, eval.Decision, pi.Status.Phase == sre.PhaseEscalated)
@@ -157,6 +199,20 @@ func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.Notifier.Sync(ctx, pi, eval.Decision, shouldEscalate); err != nil {
 		appendBlockedDetail(pi, "notification_error: "+err.Error())
 		logger.Error(err, "incident notification sync failed", "shouldEscalate", shouldEscalate)
+	}
+
+	// Após as notificações serem enviadas e o GitHub issue estiver aberto, transiciona
+	// de Blocked para Escalated — reflete que humanos já foram acionados.
+	if pi.Status.Phase == sre.PhaseBlocked &&
+		pi.Status.GitHub.Number > 0 &&
+		pi.Status.GitHub.State != "closed" {
+		previousReason := pi.Status.BlockedReason
+		pi.Status.Phase = sre.PhaseEscalated
+		logger.Info("incident transitioned to escalated after notifications sent",
+			"issueNumber", pi.Status.GitHub.Number,
+			"issueURL", pi.Status.GitHub.URL,
+			"previousBlockedReason", previousReason,
+		)
 	}
 
 	pi.Status.ObservedGeneration = pi.Generation
@@ -256,30 +312,53 @@ func shouldEscalateIssue(pi *sre.PredictiveIncident, decision *rca.Decision, fal
 	return needed
 }
 
-func buildIssueTitle(pi *sre.PredictiveIncident) string {
-	if pi.Spec.Title != "" {
-		return fmt.Sprintf("[%s] %s", pi.Spec.Identity.Namespace, pi.Spec.Title)
+// incidentService retorna o nome do serviço/workload do incident com fallback para deployment.
+func incidentService(pi *sre.PredictiveIncident) string {
+	if pi.Spec.Identity.Service != "" {
+		return pi.Spec.Identity.Service
 	}
-	return fmt.Sprintf("[%s] Incident %s", pi.Spec.Identity.Namespace, pi.Name)
+	if pi.Spec.Identity.Deployment != "" {
+		return pi.Spec.Identity.Deployment
+	}
+	return "unknown"
+}
+
+func buildIssueTitle(pi *sre.PredictiveIncident) string {
+	title := pi.Spec.Title
+	if title == "" {
+		title = pi.Name
+	}
+	svc := incidentService(pi)
+	ns := pi.Spec.Identity.Namespace
+	if ns == "" {
+		ns = "unknown"
+	}
+	return fmt.Sprintf("[%s/%s] %s", ns, svc, title)
 }
 
 func buildIssueBody(pi *sre.PredictiveIncident, decision *rca.Decision) string {
+	svc := incidentService(pi)
+	deployment := pi.Spec.Identity.Deployment
+	if deployment == "" {
+		deployment = svc
+	}
 	lines := []string{
 		"## Incident",
 		fmt.Sprintf("- Nome: `%s`", pi.Name),
 		fmt.Sprintf("- Namespace: `%s`", pi.Spec.Identity.Namespace),
-		fmt.Sprintf("- Serviço: `%s`", pi.Spec.Identity.Service),
+		fmt.Sprintf("- Serviço: `%s`", svc),
+		fmt.Sprintf("- Workload: `%s`", deployment),
 		fmt.Sprintf("- Fonte: `%s`", pi.Spec.Source),
-		fmt.Sprintf("- Severidade: `%s`", pi.Spec.Severity),
+		fmt.Sprintf("- Severidade: `%s`", defaultIfEmpty(pi.Spec.Severity, "unknown")),
 		fmt.Sprintf("- Fingerprint: `%s`", pi.Spec.Fingerprint),
 		"",
 		"## Descrição",
-		pi.Spec.Description,
+		defaultIfEmpty(pi.Spec.Description, "_sem descrição_"),
 		"",
 		"## RCA",
-		fmt.Sprintf("- Classificação: `%s`", pi.Status.RCA.Classification),
+		fmt.Sprintf("- Classificação: `%s`", defaultIfEmpty(pi.Status.RCA.Classification, "pending")),
 		fmt.Sprintf("- Confiança: `%.2f`", pi.Status.RCA.Confidence),
-		fmt.Sprintf("- Resumo: %s", pi.Status.RCA.Summary),
+		fmt.Sprintf("- Resumo: %s", defaultIfEmpty(pi.Status.RCA.Summary, "_aguardando análise_")),
 	}
 	if decision != nil && len(decision.Rollback) > 0 {
 		lines = append(lines, "", "## Próximos passos")
@@ -295,7 +374,26 @@ func buildIssueLabels(pi *sre.PredictiveIncident) []string {
 	if pi.Spec.Severity != "" {
 		labels = append(labels, "severity/"+strings.ToLower(pi.Spec.Severity))
 	}
+	if fp := pi.Spec.Fingerprint; fp != "" {
+		short := fp
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		labels = append(labels, "fp-"+short)
+	}
 	return labels
+}
+
+// issueFingerprintLabel retorna o label do GitHub correspondente ao fingerprint do incident.
+func issueFingerprintLabel(pi *sre.PredictiveIncident) string {
+	fp := pi.Spec.Fingerprint
+	if fp == "" {
+		return ""
+	}
+	if len(fp) > 12 {
+		fp = fp[:12]
+	}
+	return "fp-" + fp
 }
 
 func buildEscalationComment(gh githubissuesCommenter, pi *sre.PredictiveIncident, decision *rca.Decision) string {

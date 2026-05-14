@@ -13,7 +13,7 @@ spec:
       miudinho.o11y.io/enabled: "true"
   objective:
     target: 0.999
-    window: "30d"
+    window: "7d"
   signals:
     http5xx:
       errorRateThresholdPct: 1.0

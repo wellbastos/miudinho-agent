@@ -13,7 +13,6 @@ Principais capacidades:
 - gera incidentes preditivos a partir de `SLOPolicy` global ou específico
 - enriquece incidentes com dados de Prometheus e Tempo
 - executa RCA com Ollama e/ou Gemini
-- autentica webhooks do Alertmanager com bearer token opcional
 - aplica guardrails antes de ações mutáveis
 - pode reiniciar pods ou executar rollout restart em deployments
 - integra com GitHub Issues, Google Chat e escalonamento operacional
@@ -75,7 +74,6 @@ flowchart TD
 - Docker para build de imagem
 - Helm `3.x`
 - acesso a um cluster Kubernetes para instalação
-- `kubectl` apontando para o cluster alvo
 
 Versão recomendada:
 
@@ -96,7 +94,6 @@ Build direto com Go:
 
 ```bash
 go mod tidy
-go mod vendor
 go build -o bin/manager ./cmd/manager
 ```
 
@@ -192,13 +189,7 @@ make docker-build IMG=seu-registry/miudinho-agent VERSION=0.1.0
 make docker-push IMG=seu-registry/miudinho-agent VERSION=0.1.0
 ```
 
-O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9`, dependências em `vendor/` e runtime distroless `static:nonroot`. Antes de buildar a imagem, atualize o vendor quando houver mudança em `go.mod` ou `go.sum`:
-
-```bash
-go mod tidy
-go mod vendor
-docker build -t seu-registry/miudinho-agent:0.1.0 .
-```
+O `Dockerfile` gera a imagem a partir de `./cmd/manager` usando Go `1.25.9` e runtime distroless.
 
 ## CI/CD no GitHub
 
@@ -236,8 +227,7 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --create-namespace \
   --set image.repository=ghcr.io/wellbastos/miudinho-agent \
   --set image.tag=latest \
-  --set secret.googleApiKey="$GOOGLE_API_KEY" \
-  --set secret.webhookToken="$WEBHOOK_TOKEN"
+  --set secret.googleApiKey="$GOOGLE_API_KEY"
 ```
 
 Instalação com integrações reativas:
@@ -251,7 +241,6 @@ helm upgrade --install miudinho-agent ./charts/miudinho-agent \
   --set secret.googleApiKey="$GOOGLE_API_KEY" \
   --set secret.githubToken="$GITHUB_TOKEN" \
   --set secret.googleChatIncidentsWebhookUrl="$GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL" \
-  --set secret.webhookToken="$WEBHOOK_TOKEN" \
   --set env.githubOwner=seu-org \
   --set env.githubProductName=produto \
   --set env.githubN2Teams="sre-editor,sre-viewer,sre-admin" \
@@ -287,10 +276,8 @@ Observações importantes:
 
 - o caminho preditivo consulta métricas no Prometheus
 - o caminho reativo aceita webhook inbound do Alertmanager e também faz polling de alertas ativos em Prometheus e Alertmanager API
-- defina `secret.webhookToken` em produção e configure o Alertmanager com `Authorization: Bearer <token>`
 - o `Service` do chart é `ClusterIP`; para tráfego externo, exponha com `Ingress`, `LoadBalancer` ou `port-forward`
 - o chart precisa listar `Service`s para o modo global de `SLOPolicy`
-- `networkPolicy.enabled=true` por padrão, liberando ingress para webhook a partir dos namespaces listados em `networkPolicy.alertmanagerNamespaces`
 
 Usando os alvos do `Makefile`:
 
@@ -300,14 +287,6 @@ make uninstall NAMESPACE=o11y
 ```
 
 `make install` e `make deploy` executam `make manifests` antes do `helm upgrade --install`.
-
-Também existe um script operacional para build, push e deploy:
-
-```bash
-./scripts/deploy.sh o11y v1.2.3
-```
-
-O script atual publica a imagem em `ghcr.io/wellbastos/miudinho-agent/miudinho-agent`, usa `o11y` como namespace e exige `docker`, `go`, `helm`, `kubectl` e `gcloud` no `PATH`.
 
 ## Configuração
 
@@ -395,11 +374,10 @@ spec:
 Os parâmetros mais importantes podem ser configurados por env no chart:
 
 - observabilidade: `PROM_URL`, `ALERTMANAGER_API_URL`, `ALERTMANAGER_OUTBOUND_URL`, `TEMPO_URL`
-- Tempo preditivo: `TEMPO_PREDICTIVE_PATH`, `TEMPO_PREDICTIVE_QUERY_PARAM`
 - LLM: `LLM_ROUTING_MODE`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `GEMINI_BASE_URL`, `GEMINI_MODEL`, `SYSTEM_PROMPT`, `APPROVER_PROMPT`
 - GitHub: `GITHUB_OWNER`, `GITHUB_REPOSITORY_PREFIX`, `GITHUB_PRODUCT_NAME`, `GITHUB_N2_TEAMS`
 - notificações: `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
-- execução: `ALERT_WEBHOOK_ADDR`, `WEBHOOK_TOKEN`, `ALERT_POLL_INTERVAL`, `ALERT_SOURCES_ENABLED`, `EXECUTE_ACTIONS`, `AUTO_OBSERVE_ONLY`, `OBSERVE_ONLY_TTL_SECONDS`, `LEADER_ELECTION`
+- execução: `ALERT_WEBHOOK_ADDR`, `ALERT_POLL_INTERVAL`, `ALERT_SOURCES_ENABLED`, `EXECUTE_ACTIONS`, `AUTO_OBSERVE_ONLY`, `OBSERVE_ONLY_TTL_SECONDS`, `LEADER_ELECTION`
 
 Com `GITHUB_REPOSITORY_PREFIX=apps` e `GITHUB_PRODUCT_NAME=foo`, o operador interage com o repositório `apps-foo`. Se você usar `env.githubRepositoryPrefix=incidents` e `env.githubProductName=checkout`, o fallback vira `incidents-checkout`.
 
@@ -515,7 +493,6 @@ Campos mais usados:
 - `secret.googleApiKey`
 - `secret.githubToken`
 - `secret.googleChatIncidentsWebhookUrl`
-- `secret.webhookToken`
 - `env.alertWebhookAddr`
 - `env.alertPollInterval`
 - `env.alertSourcesEnabled`
@@ -523,8 +500,6 @@ Campos mais usados:
 - `env.alertmanagerApiUrl`
 - `env.promUrl`
 - `env.tempoUrl`
-- `env.tempoPredictivePath`
-- `env.tempoPredictiveQueryParam`
 - `env.ollamaBaseUrl`
 - `env.ollamaModel`
 - `env.geminiBaseUrl`
@@ -539,8 +514,6 @@ Campos mais usados:
 - `env.autoObserveOnly`
 - `env.observeOnlyTtlSeconds`
 - `env.executeActions`
-- `networkPolicy.enabled`
-- `networkPolicy.alertmanagerNamespaces`
 
 Os demais campos do chart seguem o padrão de `values.yaml` e normalmente só precisam ser alterados quando você estiver integrando com um stack específico de observabilidade, autenticação ou política de deploy.
 
@@ -561,7 +534,6 @@ Nesse caso, o secret precisa expor as chaves:
 - `GOOGLE_API_KEY`
 - `GITHUB_TOKEN`
 - `GOOGLE_CHAT_INCIDENTS_WEBHOOK_URL`
-- `WEBHOOK_TOKEN`, se autenticação do webhook estiver habilitada
 
 ## Samples
 
@@ -602,10 +574,6 @@ receivers:
   - name: miudinho-agent
     webhook_configs:
       - url: http://miudinho-agent.o11y.svc.cluster.local:8090/api/v1/alerts
-        http_config:
-          authorization:
-            type: Bearer
-            credentials: <WEBHOOK_TOKEN>
 ```
 
 Exemplo para gerar um alerta sintético e validar a criação assíncrona de issue:

@@ -46,14 +46,15 @@ type RCAStatus struct {
 }
 
 type GitHubIssueStatus struct {
-	Repository     string   `json:"repository,omitempty"`
-	Number         int      `json:"number,omitempty"`
-	URL            string   `json:"url,omitempty"`
-	State          string   `json:"state,omitempty"`
-	Escalated      bool     `json:"escalated,omitempty"`
-	EscalatedTeams []string `json:"escalatedTeams,omitempty"`
-	LastSyncTime   string   `json:"lastSyncTime,omitempty"`
-	ClosedAt       string   `json:"closedAt,omitempty"`
+	Repository          string   `json:"repository,omitempty"`
+	Number              int      `json:"number,omitempty"`
+	URL                 string   `json:"url,omitempty"`
+	State               string   `json:"state,omitempty"`
+	Escalated           bool     `json:"escalated,omitempty"`
+	EscalatedTeams      []string `json:"escalatedTeams,omitempty"`
+	LastSyncTime        string   `json:"lastSyncTime,omitempty"`
+	ClosedAt            string   `json:"closedAt,omitempty"`
+	LastRCAClassification string `json:"lastRCAClassification,omitempty"`
 }
 
 type AlertmanagerStatus struct {

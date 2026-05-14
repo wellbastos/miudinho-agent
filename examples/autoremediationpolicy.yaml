@@ -13,7 +13,7 @@ spec:
   guardrails:
     minAvailableReplicas: 2
     restartCooldownSeconds: 900
-    blockIfReasons: ["OOMKilled","ImagePullBackOff","ErrImagePull","CreateContainerConfigError"]
+    blockIfReasons: ["OOMKilled","ImagePullBackOff","ErrImagePull","CreateContainerConfigError","CrashLoopBackOff","Init:ImagePullBackOff","Pending","ContainerCreating","Error"]
     allowedActions: ["observeOnly","escalate"]
   rules:
     - when:

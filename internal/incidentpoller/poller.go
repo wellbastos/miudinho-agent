@@ -23,9 +23,10 @@ type AlertSource interface {
 }
 
 type Poller struct {
-	client   client.Client
-	interval time.Duration
-	sources  []AlertSource
+	client     client.Client
+	interval   time.Duration
+	sources    []AlertSource
+	ignoredNS  map[string]bool
 }
 
 func New(c client.Client, cfg config.AppConfig) *Poller {
@@ -43,10 +44,15 @@ func New(c client.Client, cfg config.AppConfig) *Poller {
 	} else {
 		log.Info("alertmanager polling disabled", "sourceInConfig", sourceEnabled(cfg.AlertPolling.Sources, "alertmanager"), "alertmanagerApiUrl", cfg.Observability.AlertmanagerAPIURL)
 	}
+	ignoredNS := incidents.IgnoredNamespaceSet(cfg.AlertPolling.IgnoredNamespaces)
+	if len(ignoredNS) > 0 {
+		log.Info("namespace filter configured", "ignoredNamespaces", cfg.AlertPolling.IgnoredNamespaces)
+	}
 	return &Poller{
-		client:   c,
-		interval: cfg.AlertPolling.Interval,
-		sources:  sources,
+		client:    c,
+		interval:  cfg.AlertPolling.Interval,
+		sources:   sources,
+		ignoredNS: ignoredNS,
 	}
 }
 
@@ -98,9 +104,14 @@ func (p *Poller) Sync(ctx context.Context) error {
 			pollErrors = append(pollErrors, fmt.Errorf("source %s: %w", source.Name(), err))
 			continue
 		}
+		filtered := 0
 		log.Info("polled alerts from source", "source", source.Name(), "count", len(alerts))
 		appmetrics.RecordAlertPoll(source.Name(), result, time.Since(startedAt), len(alerts))
 		for _, alert := range alerts {
+			if incidents.IsIgnoredAlert(alert.Labels, p.ignoredNS) {
+				filtered++
+				continue
+			}
 			fp := incidents.CanonicalFingerprint(alert)
 			if existing, ok := active[fp]; ok {
 				active[fp] = mergeObservedAlerts(existing, alert)
@@ -108,6 +119,9 @@ func (p *Poller) Sync(ctx context.Context) error {
 				continue
 			}
 			active[fp] = alert
+		}
+		if filtered > 0 {
+			log.V(1).Info("alerts filtered by namespace", "source", source.Name(), "filtered", filtered)
 		}
 	}
 
