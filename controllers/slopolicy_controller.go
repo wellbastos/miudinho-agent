@@ -49,7 +49,7 @@ func (r *SLOPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *SLOPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startedAt := time.Now()
-	logger := log.FromContext(ctx).WithValues("sloPolicy", req.NamespacedName.String())
+	logger := log.FromContext(ctx).WithValues("sloPolicy", req.String())
 	ctx = log.IntoContext(ctx, logger)
 	result := "success"
 	defer func() {

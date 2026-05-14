@@ -51,7 +51,7 @@ func (r *PredictiveIncidentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 func (r *PredictiveIncidentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	startedAt := time.Now()
-	logger := log.FromContext(ctx).WithValues("predictiveIncident", req.NamespacedName.String())
+	logger := log.FromContext(ctx).WithValues("predictiveIncident", req.String())
 	ctx = log.IntoContext(ctx, logger)
 	source := "unknown"
 	phase := "unknown"

@@ -26,7 +26,7 @@ func (r *AutoRemediationPolicyReconciler) SetupWithManager(mgr ctrl.Manager) err
 }
 
 func (r *AutoRemediationPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithValues("autoRemediationPolicy", req.NamespacedName.String())
+	logger := log.FromContext(ctx).WithValues("autoRemediationPolicy", req.String())
 
 	pol := &sre.AutoRemediationPolicy{}
 	if err := r.Get(ctx, req.NamespacedName, pol); err != nil {
